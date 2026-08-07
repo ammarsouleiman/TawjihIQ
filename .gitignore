@@ -23,3 +23,11 @@ npm-debug.log*
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# Backend-only repository scope
+frontend/
+Runner Code AI Platform/
+guidelines/
+package.json
+pnpm-workspace.yaml
+README.md
