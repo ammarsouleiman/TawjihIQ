@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://platform.runner-code.com/sitemap.xml

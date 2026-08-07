@@ -1,0 +1,2 @@
+STATUS 502
+{"error":"Failed to generate recommendations."}
