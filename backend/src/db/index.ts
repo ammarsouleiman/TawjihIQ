@@ -2,9 +2,9 @@ import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
 import {
-    majorsSeed,
-    marketFieldsSeed,
-    scholarshipsSeed,
+  majorsSeed,
+  marketFieldsSeed,
+  scholarshipsSeed,
 } from "./seed-data";
 
 function resolveDbPath(): string {

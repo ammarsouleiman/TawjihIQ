@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { chat, chatJSON, ChatMessage } from "../lib/openrouter";
+import { chat, chatJSON, ChatMessage } from "../lib/openai";
 import {
     assessmentQuestionsMessages,
     assessmentReportMessages,

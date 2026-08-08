@@ -1,4 +1,4 @@
-import { ChatMessage } from "./openrouter";
+import { ChatMessage } from "./openai";
 
 // The profile is whatever the client collected during onboarding + assessment.
 // It is intentionally loose so the frontend can send any captured fields.
