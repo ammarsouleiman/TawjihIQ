@@ -80,7 +80,7 @@ aiRouter.post("/scholarships", async (req, res) => {
   // Random seed forces the AI to generate a fresh, different set each call.
   const seed = Math.random().toString(36).slice(2, 10);
   try {
-    const result = await chatJSON(scholarshipsMessages(profile, lang, seed), 0.9);
+    const result = await chatJSON<{ scholarships?: unknown[] }>(scholarshipsMessages(profile, lang, seed), 0.9);
     const raw: unknown[] = Array.isArray(result?.scholarships) ? result.scholarships : [];
 
     // Validate every URL in parallel — drop any scholarship whose link is dead.
