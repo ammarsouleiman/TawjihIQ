@@ -20,12 +20,38 @@ type UserRow = {
 
 type PublicUser = { id: string; name: string; email: string };
 
+type ProfileData = Record<string, unknown>;
+
 function toPublic(row: UserRow): PublicUser {
   return { id: row.id, name: row.name, email: row.email };
 }
 
 function signToken(user: PublicUser): string {
   return jwt.sign(user, JWT_SECRET, { expiresIn: TOKEN_TTL });
+}
+
+function parseProfile(raw: string | null): ProfileData {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as ProfileData;
+    }
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+function authUserId(header: string | undefined): string | null {
+  const value = header ?? "";
+  const token = value.startsWith("Bearer ") ? value.slice(7) : "";
+  if (!token) return null;
+  try {
+    return (jwt.verify(token, JWT_SECRET) as PublicUser).id;
+  } catch {
+    return null;
+  }
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -98,30 +124,63 @@ authRouter.post("/login", async (req, res) => {
 
 // GET /api/auth/me  (Authorization: Bearer <token>)
 authRouter.get("/me", (req, res) => {
-  const header = req.headers.authorization ?? "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (!token) return res.status(401).json({ error: "Not authenticated." });
-  try {
-    const payload = jwt.verify(token, JWT_SECRET) as PublicUser;
-    return res.json({ user: { id: payload.id, name: payload.name, email: payload.email } });
-  } catch {
+  const userId = authUserId(req.headers.authorization);
+  if (!userId) return res.status(401).json({ error: "Not authenticated." });
+  const row = db
+    .prepare("SELECT id, name, email FROM users WHERE id = ?")
+    .get(userId) as PublicUser | undefined;
+  if (!row) {
     return res.status(401).json({ error: "Invalid or expired session." });
   }
+  return res.json({ user: row });
+});
+
+// GET /api/auth/profile  (Authorization: Bearer <token>)
+// Returns the authenticated user's profile JSON stored in the database.
+authRouter.get("/profile", (req, res) => {
+  const userId = authUserId(req.headers.authorization);
+  if (!userId) return res.status(401).json({ error: "Not authenticated." });
+
+  const row = db
+    .prepare("SELECT profile FROM users WHERE id = ?")
+    .get(userId) as Pick<UserRow, "profile"> | undefined;
+  if (!row) return res.status(404).json({ error: "Account not found." });
+
+  return res.json({ profile: parseProfile(row.profile) });
+});
+
+// PATCH /api/auth/profile  (Authorization: Bearer <token>)
+// body: { patch: object } merges into existing profile and persists to DB.
+authRouter.patch("/profile", (req, res) => {
+  const userId = authUserId(req.headers.authorization);
+  if (!userId) return res.status(401).json({ error: "Not authenticated." });
+
+  const patch = req.body?.patch;
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+    return res.status(400).json({ error: "Profile patch must be an object." });
+  }
+
+  const row = db
+    .prepare("SELECT profile FROM users WHERE id = ?")
+    .get(userId) as Pick<UserRow, "profile"> | undefined;
+  if (!row) return res.status(404).json({ error: "Account not found." });
+
+  const nextProfile = { ...parseProfile(row.profile), ...(patch as ProfileData) };
+  db.prepare("UPDATE users SET profile = ? WHERE id = ?").run(
+    JSON.stringify(nextProfile),
+    userId
+  );
+
+  return res.json({ profile: nextProfile });
 });
 
 // DELETE /api/auth/me  (Authorization: Bearer <token>)
 // Permanently removes the authenticated user's account.
 authRouter.delete("/me", (req, res) => {
-  const header = req.headers.authorization ?? "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (!token) return res.status(401).json({ error: "Not authenticated." });
-  try {
-    const payload = jwt.verify(token, JWT_SECRET) as PublicUser;
-    db.prepare("DELETE FROM users WHERE id = ?").run(payload.id);
-    return res.json({ ok: true });
-  } catch {
-    return res.status(401).json({ error: "Invalid or expired session." });
-  }
+  const userId = authUserId(req.headers.authorization);
+  if (!userId) return res.status(401).json({ error: "Not authenticated." });
+  db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  return res.json({ ok: true });
 });
 
 // PATCH /api/auth/me  (Authorization: Bearer <token>)
@@ -130,14 +189,8 @@ authRouter.delete("/me", (req, res) => {
 // password requires the current password. Returns a fresh token because the
 // name/email are embedded in it.
 authRouter.patch("/me", async (req, res) => {
-  const header = req.headers.authorization ?? "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-  if (!token) return res.status(401).json({ error: "Not authenticated." });
-
-  let userId: string;
-  try {
-    userId = (jwt.verify(token, JWT_SECRET) as PublicUser).id;
-  } catch {
+  const userId = authUserId(req.headers.authorization);
+  if (!userId) {
     return res.status(401).json({ error: "Invalid or expired session." });
   }
 

@@ -9,6 +9,7 @@ import {
     Lang,
     marketMessages,
     recommendationsMessages,
+    scholarshipsMessages,
     translateMessages,
     UserProfile,
 } from "../lib/prompts";
@@ -44,6 +45,60 @@ aiRouter.post("/market", async (req, res) => {
   } catch (err) {
     console.error("AI market error:", err);
     res.status(502).json({ error: "Failed to generate market insights." });
+  }
+});
+
+// Checks domain root only (not the full path) — verifies the organization's
+// site is alive. Accepts 2xx/3xx only; rejects 404, 403, timeouts, and errors.
+async function isDomainAlive(url: string): Promise<boolean> {
+  if (!url?.startsWith("https://")) return false;
+  try {
+    const origin = new URL(url).origin;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    try {
+      const res = await fetch(`${origin}/`, {
+        method: "HEAD",
+        redirect: "follow",
+        signal: controller.signal,
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; TawjihIQ/1.0)" },
+      });
+      return res.status >= 200 && res.status < 400;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return false;
+  }
+}
+
+// POST /api/ai/scholarships
+// body: { profile: {...}, lang?: "en" | "ar" }
+aiRouter.post("/scholarships", async (req, res) => {
+  const profile = (req.body?.profile ?? {}) as UserProfile;
+  const lang = getLang(req.body?.lang);
+  // Random seed forces the AI to generate a fresh, different set each call.
+  const seed = Math.random().toString(36).slice(2, 10);
+  try {
+    const result = await chatJSON(scholarshipsMessages(profile, lang, seed), 0.9);
+    const raw: unknown[] = Array.isArray(result?.scholarships) ? result.scholarships : [];
+
+    // Validate every URL in parallel — drop any scholarship whose link is dead.
+    const checks = await Promise.allSettled(
+      raw.map(async (s) => {
+        const sc = s as { applyUrl?: string };
+        const alive = await isDomainAlive(sc.applyUrl ?? "");
+        return alive ? s : null;
+      })
+    );
+    const scholarships = checks
+      .filter((r): r is PromiseFulfilledResult<unknown> => r.status === "fulfilled" && r.value !== null)
+      .map((r) => r.value);
+
+    res.json({ scholarships });
+  } catch (err) {
+    console.error("AI scholarships error:", err);
+    res.status(502).json({ error: "Failed to generate scholarships." });
   }
 });
 
