@@ -17,7 +17,7 @@ function parseAllowedOrigins(): string[] {
   const raw = process.env.ALLOWED_ORIGINS ?? process.env.FRONTEND_URL ?? "";
   return raw
     .split(",")
-    .map((o) => o.trim())
+    .map((o) => o.trim().replace(/\/$/, ""))
     .filter(Boolean);
 }
 
