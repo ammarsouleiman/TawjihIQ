@@ -30,7 +30,7 @@ function signToken(user: PublicUser): string {
   return jwt.sign(user, JWT_SECRET, { expiresIn: TOKEN_TTL });
 }
 
-function parseProfile(raw: string | null): ProfileData {
+export function parseProfile(raw: string | null): ProfileData {
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw) as unknown;
@@ -43,7 +43,7 @@ function parseProfile(raw: string | null): ProfileData {
   }
 }
 
-function authUserId(header: string | undefined): string | null {
+export function authUserId(header: string | undefined): string | null {
   const value = header ?? "";
   const token = value.startsWith("Bearer ") ? value.slice(7) : "";
   if (!token) return null;
