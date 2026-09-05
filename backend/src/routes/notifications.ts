@@ -12,7 +12,7 @@ type NotifPrefs = {
 };
 
 type Localized = { en: string; ar: string };
-type Built = { id: string; pref: keyof NotifPrefs; title: Localized; body: Localized; time: Localized };
+type Built = { id: string; pref: keyof NotifPrefs; target: string; title: Localized; body: Localized; time: Localized };
 
 // GET /api/notifications?lang=en|ar  (Authorization: Bearer <token>)
 // Notifications are derived from the signed-in user's profile and filtered by
@@ -38,6 +38,8 @@ notificationsRouter.get("/", (req, res) => {
   const recMap = profile.recommendationsByLang;
   const hasRecs = !!recMap && typeof recMap === "object" && Object.keys(recMap as object).length > 0;
   const savedMajors = Array.isArray(profile.savedMajors) ? profile.savedMajors : [];
+  // Ids the user has already opened — never resurfaced (same profile-JSON model).
+  const seen = Array.isArray(profile.seenNotifications) ? (profile.seenNotifications as string[]) : [];
 
   const built: Built[] = [];
 
@@ -45,6 +47,7 @@ notificationsRouter.get("/", (req, res) => {
     built.push({
       id: "recs-ready",
       pref: "updates",
+      target: "results",
       title: { en: "Your matches are ready", ar: "توصياتك جاهزة" },
       body: {
         en: "We've matched you with majors that fit your profile. Open Majors to explore them.",
@@ -58,6 +61,7 @@ notificationsRouter.get("/", (req, res) => {
     built.push({
       id: "take-assessment",
       pref: "reminders",
+      target: "assessment",
       title: { en: "Discover your best-fit major", ar: "اكتشف تخصصك الأنسب" },
       body: {
         en: "Take the quick assessment to unlock personalized recommendations.",
@@ -71,6 +75,7 @@ notificationsRouter.get("/", (req, res) => {
     built.push({
       id: "compare-shortlist",
       pref: "tips",
+      target: "shortlist",
       title: { en: "Compare your shortlist", ar: "قارن قائمتك المختصرة" },
       body: {
         en: `You've saved ${savedMajors.length} majors — compare them side by side to decide.`,
@@ -81,8 +86,8 @@ notificationsRouter.get("/", (req, res) => {
   }
 
   const out = built
-    .filter((n) => enabled(n.pref))
-    .map((n) => ({ id: n.id, title: n.title[lang], body: n.body[lang], time: n.time[lang] }));
+    .filter((n) => enabled(n.pref) && !seen.includes(n.id))
+    .map((n) => ({ id: n.id, target: n.target, title: n.title[lang], body: n.body[lang], time: n.time[lang] }));
 
   return res.json(out);
 });
