@@ -15,15 +15,24 @@ type UserRow = {
   email: string;
   password_hash: string;
   profile: string | null;
+  role: string | null;
+  school_id: string | null;
   created_at: string;
 };
 
-type PublicUser = { id: string; name: string; email: string };
+export type Role = "student" | "admin" | "owner";
+type PublicUser = { id: string; name: string; email: string; role: Role; schoolId: string | null };
 
 type ProfileData = Record<string, unknown>;
 
 function toPublic(row: UserRow): PublicUser {
-  return { id: row.id, name: row.name, email: row.email };
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    role: row.role === "admin" || row.role === "owner" ? row.role : "student",
+    schoolId: row.school_id ?? null,
+  };
 }
 
 function signToken(user: PublicUser): string {
@@ -54,13 +63,26 @@ export function authUserId(header: string | undefined): string | null {
   }
 }
 
+// Full verified payload (id, role, schoolId) for authorization checks.
+export function authUser(header: string | undefined): PublicUser | null {
+  const value = header ?? "";
+  const token = value.startsWith("Bearer ") ? value.slice(7) : "";
+  if (!token) return null;
+  try {
+    return jwt.verify(token, JWT_SECRET) as PublicUser;
+  } catch {
+    return null;
+  }
+}
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// POST /api/auth/signup  { name, email, password }
+// POST /api/auth/signup  { name, email, password, schoolCode? }
 authRouter.post("/signup", async (req, res) => {
   const name = String(req.body?.name ?? "").trim();
   const email = String(req.body?.email ?? "").trim().toLowerCase();
   const password = String(req.body?.password ?? "");
+  const schoolCode = String(req.body?.schoolCode ?? "").trim().toUpperCase();
 
   if (!name || !email || !password) {
     return res.status(400).json({ error: "Name, email and password are required." });
@@ -72,6 +94,19 @@ authRouter.post("/signup", async (req, res) => {
     return res.status(400).json({ error: "Password must be at least 6 characters." });
   }
 
+  // A school code is optional: when given it must match a real school and links
+  // the student to it; when omitted the student is an individual (no school).
+  let schoolId: string | null = null;
+  if (schoolCode) {
+    const school = db
+      .prepare("SELECT id FROM schools WHERE code = ?")
+      .get(schoolCode) as { id: string } | undefined;
+    if (!school) {
+      return res.status(400).json({ error: "Invalid school code." });
+    }
+    schoolId = school.id;
+  }
+
   const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
   if (existing) {
     return res.status(409).json({ error: "An account with this email already exists." });
@@ -81,10 +116,10 @@ authRouter.post("/signup", async (req, res) => {
     const passwordHash = await bcrypt.hash(password, 10);
     const id = randomUUID();
     db.prepare(
-      "INSERT INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)"
-    ).run(id, name, email, passwordHash);
+      "INSERT INTO users (id, name, email, password_hash, role, school_id) VALUES (?, ?, ?, ?, 'student', ?)"
+    ).run(id, name, email, passwordHash, schoolId);
 
-    const user: PublicUser = { id, name, email };
+    const user: PublicUser = { id, name, email, role: "student", schoolId };
     return res.status(201).json({ token: signToken(user), user });
   } catch (err) {
     console.error("Signup error:", err);
@@ -127,12 +162,12 @@ authRouter.get("/me", (req, res) => {
   const userId = authUserId(req.headers.authorization);
   if (!userId) return res.status(401).json({ error: "Not authenticated." });
   const row = db
-    .prepare("SELECT id, name, email FROM users WHERE id = ?")
-    .get(userId) as PublicUser | undefined;
+    .prepare("SELECT * FROM users WHERE id = ?")
+    .get(userId) as UserRow | undefined;
   if (!row) {
     return res.status(401).json({ error: "Invalid or expired session." });
   }
-  return res.json({ user: row });
+  return res.json({ user: toPublic(row) });
 });
 
 // GET /api/auth/profile  (Authorization: Bearer <token>)
@@ -246,7 +281,13 @@ authRouter.patch("/me", async (req, res) => {
       "UPDATE users SET name = ?, email = ?, password_hash = ? WHERE id = ?"
     ).run(nextName, nextEmail, nextPasswordHash, userId);
 
-    const user: PublicUser = { id: userId, name: nextName, email: nextEmail };
+    const user: PublicUser = {
+      id: userId,
+      name: nextName,
+      email: nextEmail,
+      role: row.role === "admin" || row.role === "owner" ? row.role : "student",
+      schoolId: row.school_id ?? null,
+    };
     return res.json({ token: signToken(user), user });
   } catch (err) {
     console.error("Update account error:", err);
