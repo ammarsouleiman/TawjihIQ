@@ -37,23 +37,36 @@ notificationsRouter.get("/", (req, res) => {
   const hasAssessment = !!profile.assessment;
   const recMap = profile.recommendationsByLang;
   const hasRecs = !!recMap && typeof recMap === "object" && Object.keys(recMap as object).length > 0;
+  const reportByLang = profile.assessmentReportByLang;
+  const hasReport =
+    !!profile.assessmentReport ||
+    (!!reportByLang && typeof reportByLang === "object" && Object.keys(reportByLang as object).length > 0);
+  const marketMap = profile.marketByLang;
+  const hasMarket = !!marketMap && typeof marketMap === "object" && Object.keys(marketMap as object).length > 0;
   const savedMajors = Array.isArray(profile.savedMajors) ? profile.savedMajors : [];
+  const savedScholarships = Array.isArray(profile.savedScholarships) ? profile.savedScholarships : [];
+  // Mirrors the frontend's required personal fields for a "complete" profile.
+  const REQUIRED_FIELDS = ["fullName", "age", "country", "city", "school", "educationLevel", "preferredLanguage"];
+  const profileComplete = REQUIRED_FIELDS.every((k) => {
+    const v = (profile as Record<string, unknown>)[k];
+    return typeof v === "string" && v.trim() !== "";
+  });
   // Ids the user has already opened — never resurfaced (same profile-JSON model).
   const seen = Array.isArray(profile.seenNotifications) ? (profile.seenNotifications as string[]) : [];
 
   const built: Built[] = [];
 
-  if (hasRecs) {
+  if (!profileComplete) {
     built.push({
-      id: "recs-ready",
-      pref: "updates",
-      target: "results",
-      title: { en: "Your matches are ready", ar: "توصياتك جاهزة" },
+      id: "complete-profile",
+      pref: "reminders",
+      target: "setup",
+      title: { en: "Complete your profile", ar: "أكمل ملفك الشخصي" },
       body: {
-        en: "We've matched you with majors that fit your profile. Open Majors to explore them.",
-        ar: "طابقناك مع تخصصات تناسب ملفك. افتح التخصصات لاستكشافها.",
+        en: "Add your details so we can tailor recommendations to you.",
+        ar: "أضف بياناتك حتى نخصّص التوصيات بما يناسبك.",
       },
-      time: { en: "Today", ar: "اليوم" },
+      time: { en: "Reminder", ar: "تذكير" },
     });
   }
 
@@ -71,6 +84,48 @@ notificationsRouter.get("/", (req, res) => {
     });
   }
 
+  if (hasReport) {
+    built.push({
+      id: "assessment-report",
+      pref: "updates",
+      target: "assessmentReport",
+      title: { en: "Your personality report is ready", ar: "تقرير شخصيتك جاهز" },
+      body: {
+        en: "See the strengths and traits we identified from your assessment.",
+        ar: "اطّلع على نقاط القوة والسمات التي حدّدناها من تقييمك.",
+      },
+      time: { en: "New", ar: "جديد" },
+    });
+  }
+
+  if (hasRecs) {
+    built.push({
+      id: "recs-ready",
+      pref: "updates",
+      target: "results",
+      title: { en: "Your matches are ready", ar: "توصياتك جاهزة" },
+      body: {
+        en: "We've matched you with majors that fit your profile. Open Majors to explore them.",
+        ar: "طابقناك مع تخصصات تناسب ملفك. افتح التخصصات لاستكشافها.",
+      },
+      time: { en: "New", ar: "جديد" },
+    });
+  }
+
+  if (hasMarket) {
+    built.push({
+      id: "market-ready",
+      pref: "updates",
+      target: "market",
+      title: { en: "Explore your job market", ar: "استكشف سوق العمل" },
+      body: {
+        en: "Demand and salary insights for your fields are ready to view.",
+        ar: "رؤى الطلب والرواتب لمجالاتك جاهزة للعرض.",
+      },
+      time: { en: "New", ar: "جديد" },
+    });
+  }
+
   if (savedMajors.length >= 2) {
     built.push({
       id: "compare-shortlist",
@@ -80,6 +135,20 @@ notificationsRouter.get("/", (req, res) => {
       body: {
         en: `You've saved ${savedMajors.length} majors — compare them side by side to decide.`,
         ar: `حفظت ${savedMajors.length} تخصصات — قارنها جنبًا إلى جنب لتقرّر.`,
+      },
+      time: { en: "Tip", ar: "نصيحة" },
+    });
+  }
+
+  if (savedScholarships.length >= 1) {
+    built.push({
+      id: "saved-scholarships",
+      pref: "tips",
+      target: "shortlist",
+      title: { en: "Track your scholarships", ar: "تابع منحك الدراسية" },
+      body: {
+        en: `You've saved ${savedScholarships.length} scholarship${savedScholarships.length > 1 ? "s" : ""} — keep an eye on their deadlines.`,
+        ar: `حفظت ${savedScholarships.length} منحة — تابع مواعيدها النهائية.`,
       },
       time: { en: "Tip", ar: "نصيحة" },
     });
