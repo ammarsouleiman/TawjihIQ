@@ -27,6 +27,19 @@ function generateCode(): string {
   return randomUUID().slice(0, 6).toUpperCase();
 }
 
+// GET /api/owner/overview  — aggregate stats across all schools.
+ownerRouter.get("/overview", (req, res) => {
+  const owner = requireOwner(req.headers.authorization);
+  if (!owner) return res.status(403).json({ error: "Owner access required." });
+
+  const totalSchools = (db.prepare("SELECT COUNT(*) AS c FROM schools").get() as { c: number }).c;
+  const totalStudents = (db.prepare("SELECT COUNT(*) AS c FROM users WHERE role = 'student' AND school_id IS NOT NULL").get() as { c: number }).c;
+  const totalAdmins = (db.prepare("SELECT COUNT(*) AS c FROM users WHERE role = 'admin'").get() as { c: number }).c;
+  const totalSeats = (db.prepare("SELECT COALESCE(SUM(seats), 0) AS s FROM schools").get() as { s: number }).s;
+
+  return res.json({ totalSchools, totalStudents, totalAdmins, totalSeats });
+});
+
 // GET /api/owner/schools  — all schools with student & admin counts.
 ownerRouter.get("/schools", (req, res) => {
   const owner = requireOwner(req.headers.authorization);

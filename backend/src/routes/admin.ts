@@ -40,6 +40,15 @@ function students(schoolId: string): StudentRow[] {
     .all(schoolId) as StudentRow[];
 }
 
+type RecData = { majors?: RecMajor[]; gaps?: string[] };
+// The student's canonical recommendations object (en preferred).
+function recData(profile: Record<string, unknown>): RecData | null {
+  const byLang = profile.recommendationsByLang;
+  if (!byLang || typeof byLang !== "object") return null;
+  const map = byLang as Record<string, RecData>;
+  return map.en ?? map.ar ?? null;
+}
+
 // GET /api/admin/overview  (Authorization: Bearer <admin token>)
 // Cohort-wide stats for the admin's school, derived from student profiles.
 adminRouter.get("/overview", (req, res) => {
@@ -51,32 +60,50 @@ adminRouter.get("/overview", (req, res) => {
   let recommendationsGenerated = 0;
   let completionSum = 0;
   const majorTally = new Map<string, number>();
+  const categoryTally = new Map<string, number>();
+  const gapTally = new Map<string, number>();
 
   for (const row of rows) {
     const profile = parseProfile(row.profile);
     if (profile.assessment) assessmentsCompleted++;
-    const majors = recMajors(profile);
+    const rec = recData(profile);
+    const majors = rec?.majors ?? [];
     if (majors.length > 0) {
       recommendationsGenerated++;
-      const top = majors[0]?.name;
-      if (typeof top === "string" && top.trim()) {
-        majorTally.set(top, (majorTally.get(top) ?? 0) + 1);
+      const top = majors[0];
+      if (typeof top?.name === "string" && top.name.trim()) {
+        majorTally.set(top.name, (majorTally.get(top.name) ?? 0) + 1);
+      }
+      const cat = (top as { category?: string })?.category;
+      if (typeof cat === "string" && cat.trim()) {
+        categoryTally.set(cat, (categoryTally.get(cat) ?? 0) + 1);
+      }
+    }
+    for (const gap of rec?.gaps ?? []) {
+      if (typeof gap === "string" && gap.trim()) {
+        gapTally.set(gap, (gapTally.get(gap) ?? 0) + 1);
       }
     }
     completionSum += completion(profile);
   }
 
-  const topMajors = [...majorTally.entries()]
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 6);
+  const rank = (m: Map<string, number>, n: number) =>
+    [...m.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, n);
 
   return res.json({
     totalStudents: rows.length,
     assessmentsCompleted,
     recommendationsGenerated,
     avgCompletion: rows.length ? Math.round(completionSum / rows.length) : 0,
-    topMajors,
+    // Engagement funnel across the cohort.
+    engagement: {
+      notStarted: rows.length - assessmentsCompleted,
+      assessed: Math.max(0, assessmentsCompleted - recommendationsGenerated),
+      recommended: recommendationsGenerated,
+    },
+    topMajors: rank(majorTally, 6),
+    topCategories: rank(categoryTally, 6),
+    topGaps: rank(gapTally, 6),
   });
 });
 
