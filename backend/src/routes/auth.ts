@@ -7,7 +7,7 @@ import { db } from "../db";
 export const authRouter = Router();
 
 const JWT_SECRET = process.env.JWT_SECRET || "tawjih-iq-dev-secret-change-me";
-const TOKEN_TTL = "30d";
+const TOKEN_TTL = "24h";
 
 type UserRow = {
   id: string;
