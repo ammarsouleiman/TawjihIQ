@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
-import { Router } from "express";
+import { Request, Response, Router } from "express";
 import jwt from "jsonwebtoken";
 import { db } from "../db";
 
@@ -52,9 +52,45 @@ export function parseProfile(raw: string | null): ProfileData {
   }
 }
 
-export function authUserId(header: string | undefined): string | null {
-  const value = header ?? "";
-  const token = value.startsWith("Bearer ") ? value.slice(7) : "";
+// ---- Session cookie (httpOnly, secure) -------------------------------------
+const IS_PROD = process.env.NODE_ENV === "production";
+const SESSION_COOKIE = "tjq_session";
+const SESSION_MAX_AGE = 24 * 60 * 60 * 1000; // 24h — the session timeout.
+
+function cookieBaseOptions() {
+  // Cross-site (frontend and backend on different domains) needs SameSite=None
+  // + Secure in production; lax over http locally.
+  return {
+    httpOnly: true,
+    secure: IS_PROD,
+    sameSite: (IS_PROD ? "none" : "lax") as "none" | "lax",
+    path: "/",
+  };
+}
+export function setSessionCookie(res: Response, token: string) {
+  res.cookie(SESSION_COOKIE, token, { ...cookieBaseOptions(), maxAge: SESSION_MAX_AGE });
+}
+export function clearSessionCookie(res: Response) {
+  res.clearCookie(SESSION_COOKIE, cookieBaseOptions());
+}
+
+// The session token is read from the httpOnly cookie (with a Bearer-header
+// fallback for non-browser callers). It is never exposed to client-side JS.
+function extractToken(req: Request): string | null {
+  const cookieHeader = req.headers.cookie ?? "";
+  for (const part of cookieHeader.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx === -1) continue;
+    if (part.slice(0, idx).trim() === SESSION_COOKIE) {
+      return decodeURIComponent(part.slice(idx + 1).trim());
+    }
+  }
+  const auth = req.headers.authorization ?? "";
+  return auth.startsWith("Bearer ") ? auth.slice(7) : null;
+}
+
+export function authUserId(req: Request): string | null {
+  const token = extractToken(req);
   if (!token) return null;
   try {
     return (jwt.verify(token, JWT_SECRET) as PublicUser).id;
@@ -64,9 +100,8 @@ export function authUserId(header: string | undefined): string | null {
 }
 
 // Full verified payload (id, role, schoolId) for authorization checks.
-export function authUser(header: string | undefined): PublicUser | null {
-  const value = header ?? "";
-  const token = value.startsWith("Bearer ") ? value.slice(7) : "";
+export function authUser(req: Request): PublicUser | null {
+  const token = extractToken(req);
   if (!token) return null;
   try {
     return jwt.verify(token, JWT_SECRET) as PublicUser;
@@ -120,7 +155,8 @@ authRouter.post("/signup", async (req, res) => {
     ).run(id, name, email, passwordHash, schoolId);
 
     const user: PublicUser = { id, name, email, role: "student", schoolId };
-    return res.status(201).json({ token: signToken(user), user });
+    setSessionCookie(res, signToken(user));
+    return res.status(201).json({ user });
   } catch (err) {
     console.error("Signup error:", err);
     return res.status(500).json({ error: "Could not create your account." });
@@ -150,16 +186,23 @@ authRouter.post("/login", async (req, res) => {
       return res.status(401).json({ error: "Invalid email or password." });
     }
     const user = toPublic(row);
-    return res.json({ token: signToken(user), user });
+    setSessionCookie(res, signToken(user));
+    return res.json({ user });
   } catch (err) {
     console.error("Login error:", err);
     return res.status(500).json({ error: "Could not log you in." });
   }
 });
 
-// GET /api/auth/me  (Authorization: Bearer <token>)
+// POST /api/auth/logout  — clears the session cookie.
+authRouter.post("/logout", (_req, res) => {
+  clearSessionCookie(res);
+  return res.json({ ok: true });
+});
+
+// GET /api/auth/me  — current user from the session cookie.
 authRouter.get("/me", (req, res) => {
-  const userId = authUserId(req.headers.authorization);
+  const userId = authUserId(req);
   if (!userId) return res.status(401).json({ error: "Not authenticated." });
   const row = db
     .prepare("SELECT * FROM users WHERE id = ?")
@@ -173,7 +216,7 @@ authRouter.get("/me", (req, res) => {
 // GET /api/auth/profile  (Authorization: Bearer <token>)
 // Returns the authenticated user's profile JSON stored in the database.
 authRouter.get("/profile", (req, res) => {
-  const userId = authUserId(req.headers.authorization);
+  const userId = authUserId(req);
   if (!userId) return res.status(401).json({ error: "Not authenticated." });
 
   const row = db
@@ -187,7 +230,7 @@ authRouter.get("/profile", (req, res) => {
 // PATCH /api/auth/profile  (Authorization: Bearer <token>)
 // body: { patch: object } merges into existing profile and persists to DB.
 authRouter.patch("/profile", (req, res) => {
-  const userId = authUserId(req.headers.authorization);
+  const userId = authUserId(req);
   if (!userId) return res.status(401).json({ error: "Not authenticated." });
 
   const patch = req.body?.patch;
@@ -212,9 +255,10 @@ authRouter.patch("/profile", (req, res) => {
 // DELETE /api/auth/me  (Authorization: Bearer <token>)
 // Permanently removes the authenticated user's account.
 authRouter.delete("/me", (req, res) => {
-  const userId = authUserId(req.headers.authorization);
+  const userId = authUserId(req);
   if (!userId) return res.status(401).json({ error: "Not authenticated." });
   db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  clearSessionCookie(res);
   return res.json({ ok: true });
 });
 
@@ -224,7 +268,7 @@ authRouter.delete("/me", (req, res) => {
 // password requires the current password. Returns a fresh token because the
 // name/email are embedded in it.
 authRouter.patch("/me", async (req, res) => {
-  const userId = authUserId(req.headers.authorization);
+  const userId = authUserId(req);
   if (!userId) {
     return res.status(401).json({ error: "Invalid or expired session." });
   }
@@ -288,7 +332,8 @@ authRouter.patch("/me", async (req, res) => {
       role: row.role === "admin" || row.role === "owner" ? row.role : "student",
       schoolId: row.school_id ?? null,
     };
-    return res.json({ token: signToken(user), user });
+    setSessionCookie(res, signToken(user));
+    return res.json({ user });
   } catch (err) {
     console.error("Update account error:", err);
     return res.status(500).json({ error: "Could not update your account." });

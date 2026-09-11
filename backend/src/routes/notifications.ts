@@ -19,7 +19,7 @@ type Built = { id: string; pref: keyof NotifPrefs; target: string; title: Locali
 // their saved notificationPrefs. Same profile-JSON model as the rest of the
 // app — no separate table.
 notificationsRouter.get("/", (req, res) => {
-  const userId = authUserId(req.headers.authorization);
+  const userId = authUserId(req);
   if (!userId) return res.json([]);
 
   const row = db

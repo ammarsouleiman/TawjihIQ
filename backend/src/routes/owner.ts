@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
-import { Router } from "express";
+import { Request, Router } from "express";
 import { db } from "../db";
 import { authUser } from "./auth";
 
@@ -9,8 +9,8 @@ export const ownerRouter = Router();
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // Verified company owner, or null (caller returns 403).
-function requireOwner(header: string | undefined) {
-  const user = authUser(header);
+function requireOwner(req: Request) {
+  const user = authUser(req);
   if (!user || user.role !== "owner") return null;
   return user;
 }
@@ -29,7 +29,7 @@ function generateCode(): string {
 
 // GET /api/owner/overview  — aggregate stats across all schools.
 ownerRouter.get("/overview", (req, res) => {
-  const owner = requireOwner(req.headers.authorization);
+  const owner = requireOwner(req);
   if (!owner) return res.status(403).json({ error: "Owner access required." });
 
   const totalSchools = (db.prepare("SELECT COUNT(*) AS c FROM schools").get() as { c: number }).c;
@@ -42,7 +42,7 @@ ownerRouter.get("/overview", (req, res) => {
 
 // GET /api/owner/schools  — all schools with student & admin counts.
 ownerRouter.get("/schools", (req, res) => {
-  const owner = requireOwner(req.headers.authorization);
+  const owner = requireOwner(req);
   if (!owner) return res.status(403).json({ error: "Owner access required." });
 
   const rows = db
@@ -69,7 +69,7 @@ ownerRouter.get("/schools", (req, res) => {
 
 // POST /api/owner/schools  { name, plan?, seats? }  — create a school + code.
 ownerRouter.post("/schools", (req, res) => {
-  const owner = requireOwner(req.headers.authorization);
+  const owner = requireOwner(req);
   if (!owner) return res.status(403).json({ error: "Owner access required." });
 
   const name = String(req.body?.name ?? "").trim();
@@ -90,7 +90,7 @@ ownerRouter.post("/schools", (req, res) => {
 // POST /api/owner/schools/:id/admin  { name, email, password }  — create a
 // school admin bound to that school.
 ownerRouter.post("/schools/:id/admin", async (req, res) => {
-  const owner = requireOwner(req.headers.authorization);
+  const owner = requireOwner(req);
   if (!owner) return res.status(403).json({ error: "Owner access required." });
 
   const schoolId = req.params.id;
@@ -127,7 +127,7 @@ ownerRouter.post("/schools/:id/admin", async (req, res) => {
 
 // GET /api/owner/schools/:id/admins  — the school's admin accounts.
 ownerRouter.get("/schools/:id/admins", (req, res) => {
-  const owner = requireOwner(req.headers.authorization);
+  const owner = requireOwner(req);
   if (!owner) return res.status(403).json({ error: "Owner access required." });
 
   const admins = db
@@ -141,7 +141,7 @@ ownerRouter.get("/schools/:id/admins", (req, res) => {
 
 // PATCH /api/owner/admins/:id  { name?, email?, password? }  — edit an admin.
 ownerRouter.patch("/admins/:id", async (req, res) => {
-  const owner = requireOwner(req.headers.authorization);
+  const owner = requireOwner(req);
   if (!owner) return res.status(403).json({ error: "Owner access required." });
 
   const adminId = req.params.id;
@@ -185,7 +185,7 @@ ownerRouter.patch("/admins/:id", async (req, res) => {
 
 // DELETE /api/owner/admins/:id  — remove an admin account.
 ownerRouter.delete("/admins/:id", (req, res) => {
-  const owner = requireOwner(req.headers.authorization);
+  const owner = requireOwner(req);
   if (!owner) return res.status(403).json({ error: "Owner access required." });
 
   const result = db.prepare("DELETE FROM users WHERE id = ? AND role = 'admin'").run(req.params.id);
@@ -195,7 +195,7 @@ ownerRouter.delete("/admins/:id", (req, res) => {
 
 // PATCH /api/owner/schools/:id  { name?, plan?, seats? }  — edit a school.
 ownerRouter.patch("/schools/:id", (req, res) => {
-  const owner = requireOwner(req.headers.authorization);
+  const owner = requireOwner(req);
   if (!owner) return res.status(403).json({ error: "Owner access required." });
 
   const schoolId = req.params.id;
@@ -232,7 +232,7 @@ ownerRouter.patch("/schools/:id", (req, res) => {
 // DELETE /api/owner/schools/:id  — delete a school; its admins are removed and
 // its students are detached (kept, but no longer linked to any school).
 ownerRouter.delete("/schools/:id", (req, res) => {
-  const owner = requireOwner(req.headers.authorization);
+  const owner = requireOwner(req);
   if (!owner) return res.status(403).json({ error: "Owner access required." });
 
   const schoolId = req.params.id;

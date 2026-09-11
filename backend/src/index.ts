@@ -25,6 +25,8 @@ const allowedOrigins = parseAllowedOrigins();
 
 app.use(
   cors({
+    // credentials:true is required so the browser sends/stores the session cookie.
+    credentials: true,
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
       if (allowedOrigins.length === 0) return callback(null, true);

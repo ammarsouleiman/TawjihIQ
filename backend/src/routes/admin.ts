@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Request, Router } from "express";
 import { db } from "../db";
 import { authUser, parseProfile } from "./auth";
 
@@ -11,8 +11,8 @@ type StudentRow = { id: string; name: string; email: string; profile: string | n
 type RecMajor = { name?: string; match?: number };
 
 // Verified admin bound to a school, or null (caller returns 401/403).
-function requireAdmin(header: string | undefined) {
-  const user = authUser(header);
+function requireAdmin(req: Request) {
+  const user = authUser(req);
   if (!user || user.role !== "admin" || !user.schoolId) return null;
   return user;
 }
@@ -52,7 +52,7 @@ function recData(profile: Record<string, unknown>): RecData | null {
 // GET /api/admin/overview  (Authorization: Bearer <admin token>)
 // Cohort-wide stats for the admin's school, derived from student profiles.
 adminRouter.get("/overview", (req, res) => {
-  const admin = requireAdmin(req.headers.authorization);
+  const admin = requireAdmin(req);
   if (!admin) return res.status(403).json({ error: "Admin access required." });
 
   const rows = students(admin.schoolId!);
@@ -110,7 +110,7 @@ adminRouter.get("/overview", (req, res) => {
 // GET /api/admin/students  (Authorization: Bearer <admin token>)
 // Roster of the admin's school with each student's progress.
 adminRouter.get("/students", (req, res) => {
-  const admin = requireAdmin(req.headers.authorization);
+  const admin = requireAdmin(req);
   if (!admin) return res.status(403).json({ error: "Admin access required." });
 
   const list = students(admin.schoolId!).map((row) => {
