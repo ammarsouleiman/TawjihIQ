@@ -252,11 +252,27 @@ authRouter.patch("/profile", (req, res) => {
   return res.json({ profile: nextProfile });
 });
 
-// DELETE /api/auth/me  (Authorization: Bearer <token>)
-// Permanently removes the authenticated user's account.
-authRouter.delete("/me", (req, res) => {
+// DELETE /api/auth/me  { password }
+// Permanently removes the authenticated user's account. Requires the current
+// password so an account can't be deleted from just a hijacked/open session.
+authRouter.delete("/me", async (req, res) => {
   const userId = authUserId(req);
   if (!userId) return res.status(401).json({ error: "Not authenticated." });
+
+  const row = db
+    .prepare("SELECT password_hash FROM users WHERE id = ?")
+    .get(userId) as Pick<UserRow, "password_hash"> | undefined;
+  if (!row) return res.status(404).json({ error: "Account not found." });
+
+  const password = String(req.body?.password ?? "");
+  if (!password) {
+    return res.status(400).json({ error: "Enter your password to confirm." });
+  }
+  const ok = await bcrypt.compare(password, row.password_hash);
+  if (!ok) {
+    return res.status(401).json({ error: "Incorrect password." });
+  }
+
   db.prepare("DELETE FROM users WHERE id = ?").run(userId);
   clearSessionCookie(res);
   return res.json({ ok: true });
