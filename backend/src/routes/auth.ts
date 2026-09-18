@@ -111,9 +111,66 @@ export function authUser(req: Request): PublicUser | null {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const REQUIRED_PROFILE_FIELDS = [
+  "fullName",
+  "age",
+  "country",
+  "city",
+  "school",
+  "educationLevel",
+  "preferredLanguage",
+  "currentMajor",
+  "schoolSystem",
+  "gpa",
+  "futureCountry",
+  "workStyle",
+];
+const REQUIRED_PROFILE_LISTS = [
+  "favoriteSubjects",
+  "weakSubjects",
+  "interests",
+  "curiousCareers",
+  "fields",
+];
+const REQUIRED_PERSONALITY_KEYS = [
+  "Introvert",
+  "Practical",
+  "Structured",
+  "Independent",
+  "Fast learner",
+];
 
-// POST /api/auth/signup  { name, email, password, schoolCode? }
-authRouter.post("/signup", async (req, res) => {
+function profileIsComplete(value: unknown): value is ProfileData {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const profile = value as ProfileData;
+  const stringsComplete = REQUIRED_PROFILE_FIELDS.every((key) => {
+    const field = profile[key];
+    return typeof field === "string" && field.trim() !== "";
+  });
+  const listsComplete = REQUIRED_PROFILE_LISTS.every((key) => {
+    const field = profile[key];
+    return Array.isArray(field) && field.length > 0;
+  });
+  const skills = profile.skills;
+  const skillsComplete =
+    !!skills && typeof skills === "object" && !Array.isArray(skills) && Object.keys(skills).length > 0;
+  const personality = profile.personality;
+  const personalityComplete =
+    !!personality &&
+    typeof personality === "object" &&
+    !Array.isArray(personality) &&
+    REQUIRED_PERSONALITY_KEYS.every((key) => {
+      const value = (personality as Record<string, unknown>)[key];
+      return typeof value === "string" && value.trim() !== "";
+    });
+  const age = Number(profile.age);
+  return stringsComplete && listsComplete && skillsComplete && personalityComplete && age >= 10 && age <= 70;
+}
+
+// POST /api/auth/signup/validate
+// Checks the registration data without creating an account. The frontend uses
+// this before onboarding so an account only exists after profile completion.
+authRouter.post("/signup/validate", (req, res) => {
   const name = String(req.body?.name ?? "").trim();
   const email = String(req.body?.email ?? "").trim().toLowerCase();
   const password = String(req.body?.password ?? "");
@@ -127,6 +184,38 @@ authRouter.post("/signup", async (req, res) => {
   }
   if (password.length < 6) {
     return res.status(400).json({ error: "Password must be at least 6 characters." });
+  }
+  if (schoolCode) {
+    const school = db.prepare("SELECT id FROM schools WHERE code = ?").get(schoolCode);
+    if (!school) return res.status(400).json({ error: "Invalid school code." });
+  }
+  const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
+  if (existing) {
+    return res.status(409).json({ error: "An account with this email already exists." });
+  }
+  return res.json({ ok: true });
+});
+
+// POST /api/auth/signup  { name, email, password, schoolCode?, profile }
+// The account and completed profile are inserted together at the end of setup.
+authRouter.post("/signup", async (req, res) => {
+  const name = String(req.body?.name ?? "").trim();
+  const email = String(req.body?.email ?? "").trim().toLowerCase();
+  const password = String(req.body?.password ?? "");
+  const schoolCode = String(req.body?.schoolCode ?? "").trim().toUpperCase();
+  const profile = req.body?.profile;
+
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: "Name, email and password are required." });
+  }
+  if (!EMAIL_RE.test(email)) {
+    return res.status(400).json({ error: "Please enter a valid email address." });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ error: "Password must be at least 6 characters." });
+  }
+  if (!profileIsComplete(profile)) {
+    return res.status(400).json({ error: "Complete all required profile fields before creating an account." });
   }
 
   // A school code is optional: when given it must match a real school and links
@@ -151,8 +240,8 @@ authRouter.post("/signup", async (req, res) => {
     const passwordHash = await bcrypt.hash(password, 10);
     const id = randomUUID();
     db.prepare(
-      "INSERT INTO users (id, name, email, password_hash, role, school_id) VALUES (?, ?, ?, ?, 'student', ?)"
-    ).run(id, name, email, passwordHash, schoolId);
+      "INSERT INTO users (id, name, email, password_hash, profile, role, school_id) VALUES (?, ?, ?, ?, ?, 'student', ?)"
+    ).run(id, name, email, passwordHash, JSON.stringify(profile), schoolId);
 
     const user: PublicUser = { id, name, email, role: "student", schoolId };
     setSessionCookie(res, signToken(user));
@@ -339,4 +428,3 @@ authRouter.patch("/me", async (req, res) => {
     return res.status(500).json({ error: "Could not update your account." });
   }
 });
-
