@@ -2,11 +2,67 @@ import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
 import { Request, Router } from "express";
 import { db } from "../db";
-import { authUser } from "./auth";
+import { authUser, parseProfile } from "./auth";
 
 export const ownerRouter = Router();
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const COMPLETION_FIELDS = [
+  "fullName", "age", "country", "educationLevel", "gpa", "favoriteSubjects",
+  "interests", "fields", "workStyle", "skills", "personality",
+];
+
+type OwnerStudentRow = {
+  id: string;
+  name: string;
+  email: string;
+  profile: string | null;
+  school_id: string | null;
+  school_name: string | null;
+  created_at: string;
+};
+
+function profileCompletion(profile: Record<string, unknown>): number {
+  const filled = COMPLETION_FIELDS.filter((key) => {
+    const value = profile[key];
+    if (value == null) return false;
+    if (typeof value === "string") return value.trim() !== "";
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === "object") return Object.keys(value as object).length > 0;
+    return true;
+  }).length;
+  return Math.round((filled / COMPLETION_FIELDS.length) * 100);
+}
+
+function recommendationMajors(profile: Record<string, unknown>): { name?: string }[] {
+  const byLang = profile.recommendationsByLang;
+  if (!byLang || typeof byLang !== "object") return [];
+  const map = byLang as Record<string, { majors?: { name?: string }[] }>;
+  const recommendations = map.en ?? map.ar;
+  return Array.isArray(recommendations?.majors) ? recommendations.majors : [];
+}
+
+function publicStudent(row: OwnerStudentRow) {
+  const profile = parseProfile(row.profile);
+  const majors = recommendationMajors(profile);
+  const text = (key: string) => typeof profile[key] === "string" ? String(profile[key]) : "";
+  return {
+    id: row.id,
+    name: text("fullName") || row.name,
+    email: row.email,
+    schoolId: row.school_id,
+    schoolName: row.school_name,
+    country: text("country"),
+    city: text("city"),
+    educationLevel: text("educationLevel"),
+    currentMajor: text("currentMajor"),
+    completion: profileCompletion(profile),
+    hasAssessment: !!profile.assessment,
+    hasRecommendations: majors.length > 0,
+    topMajor: typeof majors[0]?.name === "string" ? majors[0].name : null,
+    createdAt: row.created_at,
+  };
+}
 
 // Verified company owner, or null (caller returns 403).
 function requireOwner(req: Request) {
@@ -65,6 +121,32 @@ ownerRouter.get("/schools", (req, res) => {
   }[];
 
   return res.json({ schools: rows });
+});
+
+// GET /api/owner/students?schoolId=... — searchable roster data for the owner.
+ownerRouter.get("/students", (req, res) => {
+  const owner = requireOwner(req);
+  if (!owner) return res.status(403).json({ error: "Owner access required." });
+
+  const schoolId = String(req.query.schoolId ?? "").trim();
+  const sql = `SELECT u.id, u.name, u.email, u.profile, u.school_id, u.created_at,
+                      s.name AS school_name
+                 FROM users u
+            LEFT JOIN schools s ON s.id = u.school_id
+                WHERE u.role = 'student'${schoolId ? " AND u.school_id = ?" : ""}
+             ORDER BY u.created_at DESC`;
+  const rows = (schoolId ? db.prepare(sql).all(schoolId) : db.prepare(sql).all()) as OwnerStudentRow[];
+  return res.json({ students: rows.map(publicStudent) });
+});
+
+// DELETE /api/owner/students/:id — permanently remove a student account.
+ownerRouter.delete("/students/:id", (req, res) => {
+  const owner = requireOwner(req);
+  if (!owner) return res.status(403).json({ error: "Owner access required." });
+
+  const result = db.prepare("DELETE FROM users WHERE id = ? AND role = 'student'").run(req.params.id);
+  if (result.changes === 0) return res.status(404).json({ error: "Student not found." });
+  return res.json({ ok: true });
 });
 
 // POST /api/owner/schools  { name, plan?, seats? }  — create a school + code.
