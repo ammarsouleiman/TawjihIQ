@@ -81,6 +81,8 @@ function ensureColumn(table: string, column: string, definition: string) {
 ensureColumn("users", "role", "TEXT NOT NULL DEFAULT 'student'");
 ensureColumn("users", "school_id", "TEXT");
 ensureColumn("schools", "code", "TEXT");
+ensureColumn("schools", "support_email", "TEXT");
+ensureColumn("schools", "support_phone", "TEXT");
 
 // ---- Seed (only when tables are empty) -------------------------------------
 function seedIfEmpty() {

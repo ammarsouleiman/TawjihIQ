@@ -8,6 +8,8 @@ export const authRouter = Router();
 
 const JWT_SECRET = process.env.JWT_SECRET || "tawjih-iq-dev-secret-change-me";
 const TOKEN_TTL = "24h";
+const DEFAULT_SUPPORT_EMAIL = "info@runner-code.com";
+const DEFAULT_SUPPORT_PHONE = "+96179161153";
 
 type UserRow = {
   id: string;
@@ -311,6 +313,37 @@ authRouter.get("/me", (req, res) => {
     return res.status(401).json({ error: "Invalid or expired session." });
   }
   return res.json({ user: toPublic(row) });
+});
+
+// GET /api/auth/support — returns the correct support channel for the current
+// user. School-linked accounts use their school's contacts; independent users
+// always use Runner Code support. Empty school contacts safely fall back too.
+authRouter.get("/support", (req, res) => {
+  const userId = authUserId(req);
+  if (!userId) return res.status(401).json({ error: "Not authenticated." });
+
+  const row = db
+    .prepare(
+      `SELECT u.school_id, s.name AS school_name,
+              s.support_email, s.support_phone
+         FROM users u
+    LEFT JOIN schools s ON s.id = u.school_id
+        WHERE u.id = ?`
+    )
+    .get(userId) as {
+      school_id: string | null;
+      school_name: string | null;
+      support_email: string | null;
+      support_phone: string | null;
+    } | undefined;
+  if (!row) return res.status(404).json({ error: "Account not found." });
+
+  return res.json({
+    email: row.school_id && row.support_email?.trim() ? row.support_email.trim() : DEFAULT_SUPPORT_EMAIL,
+    phone: row.school_id && row.support_phone?.trim() ? row.support_phone.trim() : DEFAULT_SUPPORT_PHONE,
+    schoolName: row.school_id ? row.school_name : null,
+    schoolProvided: !!(row.school_id && (row.support_email?.trim() || row.support_phone?.trim())),
+  });
 });
 
 // GET /api/auth/profile  (Authorization: Bearer <token>)

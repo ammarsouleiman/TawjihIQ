@@ -104,6 +104,7 @@ ownerRouter.get("/schools", (req, res) => {
   const rows = db
     .prepare(
       `SELECT s.id, s.name, s.code, s.plan, s.seats, s.created_at,
+              s.support_email AS supportEmail, s.support_phone AS supportPhone,
               (SELECT COUNT(*) FROM users u WHERE u.school_id = s.id AND u.role = 'student') AS students,
               (SELECT COUNT(*) FROM users u WHERE u.school_id = s.id AND u.role = 'admin')   AS admins
          FROM schools s
@@ -118,6 +119,8 @@ ownerRouter.get("/schools", (req, res) => {
     created_at: string;
     students: number;
     admins: number;
+    supportEmail: string | null;
+    supportPhone: string | null;
   }[];
 
   return res.json({ schools: rows });
@@ -166,7 +169,7 @@ ownerRouter.post("/schools", (req, res) => {
     "INSERT INTO schools (id, name, code, plan, seats) VALUES (?, ?, ?, ?, ?)"
   ).run(id, name, code, plan, seats);
 
-  return res.status(201).json({ school: { id, name, code, plan, seats, students: 0, admins: 0 } });
+  return res.status(201).json({ school: { id, name, code, plan, seats, students: 0, admins: 0, supportEmail: null, supportPhone: null } });
 });
 
 // POST /api/owner/schools/:id/admin  { name, email, password }  — create a
@@ -275,20 +278,22 @@ ownerRouter.delete("/admins/:id", (req, res) => {
   return res.json({ ok: true });
 });
 
-// PATCH /api/owner/schools/:id  { name?, plan?, seats? }  — edit a school.
+// PATCH /api/owner/schools/:id — edit school, plan, capacity or support info.
 ownerRouter.patch("/schools/:id", (req, res) => {
   const owner = requireOwner(req);
   if (!owner) return res.status(403).json({ error: "Owner access required." });
 
   const schoolId = req.params.id;
   const row = db
-    .prepare("SELECT id, name, code, plan, seats FROM schools WHERE id = ?")
-    .get(schoolId) as { id: string; name: string; code: string | null; plan: string; seats: number } | undefined;
+    .prepare("SELECT id, name, code, plan, seats, support_email AS supportEmail, support_phone AS supportPhone FROM schools WHERE id = ?")
+    .get(schoolId) as { id: string; name: string; code: string | null; plan: string; seats: number; supportEmail: string | null; supportPhone: string | null } | undefined;
   if (!row) return res.status(404).json({ error: "School not found." });
 
   let nextName = row.name;
   let nextPlan = row.plan;
   let nextSeats = row.seats;
+  let nextSupportEmail = row.supportEmail;
+  let nextSupportPhone = row.supportPhone;
   if (req.body?.name !== undefined) {
     const name = String(req.body.name).trim();
     if (!name) return res.status(400).json({ error: "School name is required." });
@@ -301,14 +306,26 @@ ownerRouter.patch("/schools/:id", (req, res) => {
     const seats = Number(req.body.seats);
     if (Number.isFinite(seats) && seats > 0) nextSeats = Math.floor(seats);
   }
+  if (req.body?.supportEmail !== undefined) {
+    const email = String(req.body.supportEmail ?? "").trim().toLowerCase();
+    if (email && !EMAIL_RE.test(email)) return res.status(400).json({ error: "Please enter a valid support email." });
+    nextSupportEmail = email || null;
+  }
+  if (req.body?.supportPhone !== undefined) {
+    const phone = String(req.body.supportPhone ?? "").trim();
+    if (phone.length > 40) return res.status(400).json({ error: "Support phone number is too long." });
+    nextSupportPhone = phone || null;
+  }
 
-  db.prepare("UPDATE schools SET name = ?, plan = ?, seats = ? WHERE id = ?").run(
+  db.prepare("UPDATE schools SET name = ?, plan = ?, seats = ?, support_email = ?, support_phone = ? WHERE id = ?").run(
     nextName,
     nextPlan,
     nextSeats,
+    nextSupportEmail,
+    nextSupportPhone,
     schoolId
   );
-  return res.json({ school: { id: schoolId, name: nextName, code: row.code, plan: nextPlan, seats: nextSeats } });
+  return res.json({ school: { id: schoolId, name: nextName, code: row.code, plan: nextPlan, seats: nextSeats, supportEmail: nextSupportEmail, supportPhone: nextSupportPhone } });
 });
 
 // DELETE /api/owner/schools/:id  — delete a school; its admins are removed and
