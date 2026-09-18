@@ -17,11 +17,19 @@ type UserRow = {
   profile: string | null;
   role: string | null;
   school_id: string | null;
+  school_name?: string | null;
   created_at: string;
 };
 
 export type Role = "student" | "admin" | "owner";
-type PublicUser = { id: string; name: string; email: string; role: Role; schoolId: string | null };
+type PublicUser = {
+  id: string;
+  name: string;
+  email: string;
+  role: Role;
+  schoolId: string | null;
+  schoolName: string | null;
+};
 
 type ProfileData = Record<string, unknown>;
 
@@ -32,6 +40,7 @@ function toPublic(row: UserRow): PublicUser {
     email: row.email,
     role: row.role === "admin" || row.role === "owner" ? row.role : "student",
     schoolId: row.school_id ?? null,
+    schoolName: row.school_name ?? null,
   };
 }
 
@@ -221,14 +230,16 @@ authRouter.post("/signup", async (req, res) => {
   // A school code is optional: when given it must match a real school and links
   // the student to it; when omitted the student is an individual (no school).
   let schoolId: string | null = null;
+  let schoolName: string | null = null;
   if (schoolCode) {
     const school = db
-      .prepare("SELECT id FROM schools WHERE code = ?")
-      .get(schoolCode) as { id: string } | undefined;
+      .prepare("SELECT id, name FROM schools WHERE code = ?")
+      .get(schoolCode) as { id: string; name: string } | undefined;
     if (!school) {
       return res.status(400).json({ error: "Invalid school code." });
     }
     schoolId = school.id;
+    schoolName = school.name;
   }
 
   const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
@@ -243,7 +254,7 @@ authRouter.post("/signup", async (req, res) => {
       "INSERT INTO users (id, name, email, password_hash, profile, role, school_id) VALUES (?, ?, ?, ?, ?, 'student', ?)"
     ).run(id, name, email, passwordHash, JSON.stringify(profile), schoolId);
 
-    const user: PublicUser = { id, name, email, role: "student", schoolId };
+    const user: PublicUser = { id, name, email, role: "student", schoolId, schoolName };
     setSessionCookie(res, signToken(user));
     return res.status(201).json({ user });
   } catch (err) {
@@ -262,7 +273,7 @@ authRouter.post("/login", async (req, res) => {
   }
 
   const row = db
-    .prepare("SELECT * FROM users WHERE email = ?")
+    .prepare("SELECT u.*, s.name AS school_name FROM users u LEFT JOIN schools s ON s.id = u.school_id WHERE u.email = ?")
     .get(email) as UserRow | undefined;
 
   if (!row) {
@@ -294,7 +305,7 @@ authRouter.get("/me", (req, res) => {
   const userId = authUserId(req);
   if (!userId) return res.status(401).json({ error: "Not authenticated." });
   const row = db
-    .prepare("SELECT * FROM users WHERE id = ?")
+    .prepare("SELECT u.*, s.name AS school_name FROM users u LEFT JOIN schools s ON s.id = u.school_id WHERE u.id = ?")
     .get(userId) as UserRow | undefined;
   if (!row) {
     return res.status(401).json({ error: "Invalid or expired session." });
@@ -363,7 +374,7 @@ authRouter.patch("/me", async (req, res) => {
   }
 
   const row = db
-    .prepare("SELECT * FROM users WHERE id = ?")
+    .prepare("SELECT u.*, s.name AS school_name FROM users u LEFT JOIN schools s ON s.id = u.school_id WHERE u.id = ?")
     .get(userId) as UserRow | undefined;
   if (!row) return res.status(404).json({ error: "Account not found." });
 
@@ -420,6 +431,7 @@ authRouter.patch("/me", async (req, res) => {
       email: nextEmail,
       role: row.role === "admin" || row.role === "owner" ? row.role : "student",
       schoolId: row.school_id ?? null,
+      schoolName: row.school_name ?? null,
     };
     setSessionCookie(res, signToken(user));
     return res.json({ user });
