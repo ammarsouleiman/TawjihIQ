@@ -77,6 +77,9 @@ adminRouter.get("/overview", (req, res) => {
   if (!admin) return res.status(403).json({ error: "Admin access required." });
 
   const rows = students(admin.schoolId!);
+  const school = db
+    .prepare("SELECT name, code, plan, seats FROM schools WHERE id = ?")
+    .get(admin.schoolId) as { name: string; code: string | null; plan: string; seats: number } | undefined;
   let assessmentsCompleted = 0;
   let recommendationsGenerated = 0;
   let completionSum = 0;
@@ -112,6 +115,7 @@ adminRouter.get("/overview", (req, res) => {
     [...m.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, n);
 
   return res.json({
+    school: school ?? null,
     totalStudents: rows.length,
     assessmentsCompleted,
     recommendationsGenerated,
@@ -201,7 +205,7 @@ adminRouter.get("/students/:id", (req, res) => {
         assessmentComplete: !!profile.assessment || !!assessmentReport,
         dnaReportReady: !!assessmentReport,
         recommendationsReady: majors.length > 0,
-        careerReportReady: !!assessmentReport && majors.length > 0,
+        careerReportReady: majors.length > 0,
         roadmapReady: roadmap.length > 0,
         marketViewed: !!market,
         savedMajors: savedMajors.length,
