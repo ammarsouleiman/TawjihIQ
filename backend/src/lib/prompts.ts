@@ -123,6 +123,40 @@ All human-readable text must be in ${langName(lang)}.`,
   ];
 }
 
+/** Generate one focused, practical coaching insight for the student's day. */
+export function dailyInsightMessages(
+  profile: UserProfile,
+  recommendations: unknown,
+  date: string,
+  lang: Lang
+): ChatMessage[] {
+  return [
+    {
+      role: "system",
+      content: `You are TawjihIQ's daily career coach. Give ONE fresh, highly personalized and practical insight for a student. Ground it only in their real profile, assessment and recommendations. Never invent grades, achievements, deadlines or statistics. Do not give generic motivational advice. Keep it concise and useful. Write all human-readable text in ${langName(lang)}.`,
+    },
+    {
+      role: "user",
+      content: `Today's date is ${date}.
+
+Student profile (JSON):
+${JSON.stringify(profile, null, 2)}
+
+Current recommendations (JSON):
+${JSON.stringify(recommendations ?? null, null, 2)}
+
+Create today's coaching insight. Make its focus different from any previous daily insight found in the profile. Choose the most useful focus now: a strength to apply, a gap to improve, a major to explore, a decision to clarify, or a small career-building action.
+
+Return ONLY valid JSON in this exact shape:
+{
+  "title": string (3-7 words),
+  "insight": string (2 concise sentences, personalized with evidence from the student's data),
+  "action": string (one concrete action achievable today, max 14 words)
+}`,
+    },
+  ];
+}
+
 /** Ask the model for a labour-market outlook tailored to the student. */
 export function marketMessages(
   profile: UserProfile,

@@ -6,6 +6,7 @@ import {
     chatSuggestionsMessages,
     chatSystemMessage,
     compareMessages,
+    dailyInsightMessages,
     Lang,
     marketMessages,
     recommendationsMessages,
@@ -31,6 +32,30 @@ aiRouter.post("/recommendations", async (req, res) => {
   } catch (err) {
     console.error("AI recommendations error:", err);
     res.status(502).json({ error: "Failed to generate recommendations." });
+  }
+});
+
+// POST /api/ai/daily-insight
+// One insight is generated per date by the client and then cached in the
+// student's persisted profile, avoiding a new AI call on every dashboard load.
+aiRouter.post("/daily-insight", async (req, res) => {
+  const profile = (req.body?.profile ?? {}) as UserProfile;
+  const recommendations = req.body?.recommendations ?? null;
+  const lang = getLang(req.body?.lang);
+  const requestedDate = typeof req.body?.date === "string" ? req.body.date : "";
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)
+    ? requestedDate
+    : new Date().toISOString().slice(0, 10);
+
+  try {
+    const result = await chatJSON<{ title: string; insight: string; action: string }>(
+      dailyInsightMessages(profile, recommendations, date, lang),
+      0.7
+    );
+    res.json(result);
+  } catch (err) {
+    console.error("AI daily insight error:", err);
+    res.status(502).json({ error: "Failed to generate today's insight." });
   }
 });
 
