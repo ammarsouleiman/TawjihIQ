@@ -418,6 +418,25 @@ authRouter.get("/support", (req, res) => {
   });
 });
 
+// GET /api/auth/school-access — identifiers belonging to the signed-in
+// school student. The personal code is only returned to its activated owner;
+// the frontend masks it visually while keeping copy available.
+authRouter.get("/school-access", (req, res) => {
+  const userId = authUserId(req);
+  if (!userId) return res.status(401).json({ error: "Not authenticated." });
+
+  const row = db.prepare(`
+    SELECT u.school_id AS schoolId, i.code AS personalCode
+      FROM users u
+      LEFT JOIN school_invitations i
+        ON i.used_by_user_id = u.id AND i.status = 'activated'
+     WHERE u.id = ? AND u.role = 'student'
+  `).get(userId) as { schoolId: string | null; personalCode: string | null } | undefined;
+
+  if (!row) return res.status(404).json({ error: "Student account not found." });
+  return res.json({ schoolId: row.schoolId, personalCode: row.personalCode });
+});
+
 // GET /api/auth/profile  (Authorization: Bearer <token>)
 // Returns the authenticated user's profile JSON stored in the database.
 authRouter.get("/profile", (req, res) => {
