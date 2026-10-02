@@ -189,6 +189,7 @@ adminRouter.get("/students/:id", (req, res) => {
   const recommendations = canonicalValue<Record<string, unknown>>(profile, "recommendationsByLang");
   const assessmentReport = canonicalValue<Record<string, unknown>>(profile, "assessmentReportByLang", "assessmentReport");
   const market = canonicalValue<Record<string, unknown>>(profile, "marketByLang");
+  const scholarships = arrayValue(profile, "scholarshipsAI");
   const savedMajors = arrayValue(profile, "savedMajors");
   const savedScholarships = arrayValue(profile, "savedScholarships");
   const majors = Array.isArray(recommendations?.majors) ? recommendations.majors : [];
@@ -223,12 +224,14 @@ adminRouter.get("/students/:id", (req, res) => {
         careerReportReady: majors.length > 0,
         roadmapReady: roadmap.length > 0,
         marketViewed: !!market,
+        scholarshipsReady: scholarships.length > 0,
         savedMajors: savedMajors.length,
         savedScholarships: savedScholarships.length,
       },
       assessmentReport,
       recommendations,
       market,
+      scholarships,
       savedMajors,
       savedScholarships,
     },

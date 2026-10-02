@@ -449,7 +449,7 @@ All human-readable text in ${langName(lang)}.`,
 /**
  * Ask the model to turn the student's assessment answers (plus their profile
  * and everything the AI already concluded about them) into a rich, professional
- * "career DNA" report — the flagship output.
+ * Career Assessment Report — the flagship assessment output.
  */
 export function assessmentReportMessages(
   profile: UserProfile,
@@ -464,7 +464,7 @@ export function assessmentReportMessages(
   return [
     {
       role: "system",
-      content: `You are TawjihIQ, a senior career psychologist producing a premium, professional "Career DNA" report for ONE student. This report is the flagship of the product — it must feel astonishingly personal, insightful and genuinely useful, like a report a paid expert would write after a deep session.
+      content: `You are TawjihIQ, a senior career psychologist producing a premium, professional Career Assessment Report for ONE student. This report is the flagship assessment output — it must feel astonishingly personal, insightful and genuinely useful, like a report a paid expert would write after a deep session.
 
 Principles — follow ALL:
 1. SYNTHESIZE, don't repeat: Combine the profile, your prior conclusions AND the assessment answers into fresh insight. Tell the student something about themselves they would not have articulated — connect dots between their answers, subjects, skills, personality and the majors you recommended.
@@ -491,7 +491,7 @@ The student's answers to their tailored assessment (JSON):
 
 ${JSON.stringify(answers, null, 2)}
 
-Produce a deep, personal Career DNA report for THIS student. Base every part on their actual profile, your earlier conclusions and how they answered.
+Produce a deep, personal Career Assessment Report for THIS student. Base every part on their actual profile, your earlier conclusions and how they answered.
 
 Respond with ONLY a valid JSON object (no markdown) of this exact shape:
 {

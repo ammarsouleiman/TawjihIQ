@@ -24,11 +24,11 @@ const eventCatalog = {
   assessment_completed: {
     pref: "updates", target: "assessmentReport",
     title: { en: "Assessment completed", ar: "اكتمل التقييم" },
-    body: { en: "Great work — your answers were saved and your Career Blueprint is being prepared.", ar: "عمل رائع — تم حفظ إجاباتك ويجري إعداد بصمتك المهنية." },
+    body: { en: "Great work — your answers were saved and your assessment results are being prepared.", ar: "عمل رائع — تم حفظ إجاباتك ويجري إعداد نتائج تقييمك." },
   },
   assessment_report_ready: {
     pref: "updates", target: "assessmentReport",
-    title: { en: "Your Career Blueprint is ready", ar: "بصمتك المهنية جاهزة" },
+    title: { en: "Your assessment results are ready", ar: "نتائج تقييمك جاهزة" },
     body: { en: "Your personalized strengths, traits, and career directions are ready to review.", ar: "نقاط قوتك وسماتك واتجاهاتك المهنية المخصصة أصبحت جاهزة للمراجعة." },
   },
   recommendations_ready: {
