@@ -32,6 +32,7 @@ if (!fs.existsSync(dbDir)) {
 
 export const db = new Database(dbPath);
 db.pragma("journal_mode = WAL");
+db.pragma("foreign_keys = ON");
 
 // ---- Schema ----------------------------------------------------------------
 db.exec(`
@@ -69,6 +70,19 @@ db.exec(`
     seats       INTEGER NOT NULL DEFAULT 50,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS user_notifications (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    event_type  TEXT NOT NULL,
+    details     TEXT,
+    read_at     TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_user_notifications_unread
+    ON user_notifications(user_id, read_at, created_at DESC);
 `);
 
 // ---- Migrations: add columns to existing installs without dropping data -----
