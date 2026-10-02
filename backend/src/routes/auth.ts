@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { Request, Response, Router } from "express";
 import jwt from "jsonwebtoken";
 import { db } from "../db";
+import { releaseExpiredReservations, syncSchoolInvitations } from "../lib/invitations";
 
 export const authRouter = Router();
 
@@ -186,6 +187,7 @@ authRouter.post("/signup/validate", (req, res) => {
   const email = String(req.body?.email ?? "").trim().toLowerCase();
   const password = String(req.body?.password ?? "");
   const schoolCode = String(req.body?.schoolCode ?? "").trim().toUpperCase();
+  const invitationCode = String(req.body?.invitationCode ?? "").trim().toUpperCase();
 
   if (!name || !email || !password) {
     return res.status(400).json({ error: "Name, email and password are required." });
@@ -196,15 +198,45 @@ authRouter.post("/signup/validate", (req, res) => {
   if (password.length < 6) {
     return res.status(400).json({ error: "Password must be at least 6 characters." });
   }
-  if (schoolCode) {
-    const school = db.prepare("SELECT id FROM schools WHERE code = ?").get(schoolCode);
-    if (!school) return res.status(400).json({ error: "Invalid school code." });
-  }
   const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
   if (existing) {
     return res.status(409).json({ error: "An account with this email already exists." });
   }
-  return res.json({ ok: true });
+  if (!schoolCode && invitationCode) {
+    return res.status(400).json({ error: "Enter the school code that belongs to this invitation." });
+  }
+  if (schoolCode && !invitationCode) {
+    return res.status(400).json({ error: "A personal invitation code is required for school access." });
+  }
+
+  let reservationToken: string | undefined;
+  if (schoolCode) {
+    const school = db.prepare("SELECT id FROM schools WHERE code = ?").get(schoolCode) as { id: string } | undefined;
+    if (!school) return res.status(400).json({ error: "Invalid school code." });
+    releaseExpiredReservations(school.id);
+    const invitation = db.prepare(`
+      SELECT id, status, reserved_email AS reservedEmail
+      FROM school_invitations WHERE school_id = ? AND code = ?
+    `).get(school.id, invitationCode) as { id: string; status: string; reservedEmail: string | null } | undefined;
+    if (!invitation) return res.status(400).json({ error: "Invalid personal invitation code." });
+    if (invitation.status === "activated" || invitation.status === "revoked") {
+      return res.status(409).json({ error: "This personal invitation is no longer available." });
+    }
+    if (invitation.status === "reserved" && invitation.reservedEmail !== email) {
+      return res.status(409).json({ error: "This personal invitation is currently reserved by another student." });
+    }
+    reservationToken = randomUUID();
+    const reserved = db.prepare(`
+      UPDATE school_invitations
+      SET status = 'reserved', reserved_token = ?, reserved_email = ?,
+          reserved_until = datetime('now', '+60 minutes')
+      WHERE id = ? AND (status = 'available' OR (status = 'reserved' AND reserved_email = ?))
+    `).run(reservationToken, email, invitation.id, email);
+    if (reserved.changes === 0) {
+      return res.status(409).json({ error: "This personal invitation was just reserved by another student." });
+    }
+  }
+  return res.json({ ok: true, reservationToken });
 });
 
 // POST /api/auth/signup  { name, email, password, schoolCode?, profile }
@@ -214,6 +246,8 @@ authRouter.post("/signup", async (req, res) => {
   const email = String(req.body?.email ?? "").trim().toLowerCase();
   const password = String(req.body?.password ?? "");
   const schoolCode = String(req.body?.schoolCode ?? "").trim().toUpperCase();
+  const invitationCode = String(req.body?.invitationCode ?? "").trim().toUpperCase();
+  const reservationToken = String(req.body?.reservationToken ?? "").trim();
   const profile = req.body?.profile;
 
   if (!name || !email || !password) {
@@ -233,6 +267,7 @@ authRouter.post("/signup", async (req, res) => {
   // the student to it; when omitted the student is an individual (no school).
   let schoolId: string | null = null;
   let schoolName: string | null = null;
+  let invitationId: string | null = null;
   if (schoolCode) {
     const school = db
       .prepare("SELECT id, name FROM schools WHERE code = ?")
@@ -242,6 +277,21 @@ authRouter.post("/signup", async (req, res) => {
     }
     schoolId = school.id;
     schoolName = school.name;
+    if (!invitationCode || !reservationToken) {
+      return res.status(400).json({ error: "Your personal invitation reservation is missing. Start registration again." });
+    }
+    releaseExpiredReservations(school.id);
+    const invitation = db.prepare(`
+      SELECT id FROM school_invitations
+      WHERE school_id = ? AND code = ? AND status = 'reserved'
+        AND reserved_token = ? AND reserved_email = ? AND reserved_until > datetime('now')
+    `).get(school.id, invitationCode, reservationToken, email) as { id: string } | undefined;
+    if (!invitation) {
+      return res.status(409).json({ error: "Your personal invitation expired or is no longer available. Start registration again." });
+    }
+    invitationId = invitation.id;
+  } else if (invitationCode || reservationToken) {
+    return res.status(400).json({ error: "A school code is required with a personal invitation." });
   }
 
   const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
@@ -252,15 +302,37 @@ authRouter.post("/signup", async (req, res) => {
   try {
     const passwordHash = await bcrypt.hash(password, 10);
     const id = randomUUID();
-    db.prepare(
-      "INSERT INTO users (id, name, email, password_hash, profile, role, school_id) VALUES (?, ?, ?, ?, ?, 'student', ?)"
-    ).run(id, name, email, passwordHash, JSON.stringify(profile), schoolId);
+    const createAccount = db.transaction(() => {
+      if (invitationId) {
+        const stillReserved = db.prepare(`
+          SELECT id FROM school_invitations
+          WHERE id = ? AND status = 'reserved' AND reserved_token = ?
+            AND reserved_email = ? AND reserved_until > datetime('now')
+        `).get(invitationId, reservationToken, email);
+        if (!stillReserved) throw new Error("INVITATION_EXPIRED");
+      }
+      db.prepare(
+        "INSERT INTO users (id, name, email, password_hash, profile, role, school_id) VALUES (?, ?, ?, ?, ?, 'student', ?)"
+      ).run(id, name, email, passwordHash, JSON.stringify(profile), schoolId);
+      if (invitationId) {
+        db.prepare(`
+          UPDATE school_invitations
+          SET status = 'activated', used_by_user_id = ?, used_at = datetime('now'),
+              reserved_token = NULL, reserved_email = NULL, reserved_until = NULL
+          WHERE id = ?
+        `).run(id, invitationId);
+      }
+    });
+    createAccount();
 
     const user: PublicUser = { id, name, email, role: "student", schoolId, schoolName };
     setSessionCookie(res, signToken(user));
     return res.status(201).json({ user });
   } catch (err) {
     console.error("Signup error:", err);
+    if (err instanceof Error && err.message === "INVITATION_EXPIRED") {
+      return res.status(409).json({ error: "Your personal invitation expired. Start registration again." });
+    }
     return res.status(500).json({ error: "Could not create your account." });
   }
 });
@@ -390,7 +462,15 @@ authRouter.patch("/profile", (req, res) => {
 authRouter.delete("/me", (req, res) => {
   const userId = authUserId(req);
   if (!userId) return res.status(401).json({ error: "Not authenticated." });
+  const student = db.prepare("SELECT school_id AS schoolId, role FROM users WHERE id = ?").get(userId) as { schoolId: string | null; role: string } | undefined;
+  if (student?.schoolId && student.role === "student") {
+    db.prepare("UPDATE school_invitations SET status = 'revoked', revoked_at = datetime('now') WHERE used_by_user_id = ?").run(userId);
+  }
   db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  if (student?.schoolId && student.role === "student") {
+    const school = db.prepare("SELECT seats FROM schools WHERE id = ?").get(student.schoolId) as { seats: number } | undefined;
+    if (school) syncSchoolInvitations(student.schoolId, school.seats);
+  }
   clearSessionCookie(res);
   return res.json({ ok: true });
 });

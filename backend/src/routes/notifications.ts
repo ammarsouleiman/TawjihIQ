@@ -86,9 +86,10 @@ notificationsRouter.post("/event", (req, res) => {
   if (!event || !(event in eventCatalog)) {
     return res.status(400).json({ error: "Unknown notification event." });
   }
-  const details = req.body?.details && typeof req.body.details === "object"
+  const rawDetails = req.body?.details && typeof req.body.details === "object"
     ? JSON.stringify(req.body.details)
     : null;
+  const details = rawDetails && rawDetails.length <= 2000 ? rawDetails : null;
   const id = randomUUID();
   db.prepare("INSERT INTO user_notifications (id, user_id, event_type, details) VALUES (?, ?, ?, ?)")
     .run(id, userId, event, details);

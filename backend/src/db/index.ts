@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 import Database from "better-sqlite3";
-import { randomUUID } from "crypto";
+import { randomBytes, randomUUID } from "crypto";
 import fs from "fs";
 import path from "path";
 import {
@@ -83,6 +83,25 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_user_notifications_unread
     ON user_notifications(user_id, read_at, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS school_invitations (
+    id              TEXT PRIMARY KEY,
+    school_id       TEXT NOT NULL,
+    code            TEXT NOT NULL UNIQUE,
+    status          TEXT NOT NULL DEFAULT 'available',
+    reserved_token  TEXT,
+    reserved_email  TEXT,
+    reserved_until  TEXT,
+    used_by_user_id TEXT UNIQUE,
+    used_at         TEXT,
+    revoked_at      TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (school_id) REFERENCES schools(id) ON DELETE CASCADE,
+    FOREIGN KEY (used_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_school_invitations_school_status
+    ON school_invitations(school_id, status, created_at);
 `);
 
 // ---- Migrations: add columns to existing installs without dropping data -----
@@ -148,3 +167,46 @@ function seedOwner() {
   ).run(randomUUID(), name, email, bcrypt.hashSync(password, 10));
 }
 seedOwner();
+
+// Backfill invitation seats for schools created before personal invitations
+// existed. Existing students receive an activated legacy slot; the remaining
+// capacity receives distributable one-time codes.
+function invitationCode() {
+  const raw = randomBytes(8).toString("hex").toUpperCase();
+  return `INV-${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}`;
+}
+
+function backfillSchoolInvitations() {
+  const schools = db.prepare("SELECT id, seats FROM schools").all() as { id: string; seats: number }[];
+  const insertUsed = db.prepare(`
+    INSERT INTO school_invitations (id, school_id, code, status, used_by_user_id, used_at)
+    VALUES (?, ?, ?, 'activated', ?, datetime('now'))
+  `);
+  const insertAvailable = db.prepare(
+    "INSERT INTO school_invitations (id, school_id, code, status) VALUES (?, ?, ?, 'available')"
+  );
+
+  const tx = db.transaction(() => {
+    for (const school of schools) {
+      const unmapped = db.prepare(`
+        SELECT u.id FROM users u
+        WHERE u.school_id = ? AND u.role = 'student'
+          AND NOT EXISTS (SELECT 1 FROM school_invitations i WHERE i.used_by_user_id = u.id)
+      `).all(school.id) as { id: string }[];
+      for (const student of unmapped) {
+        insertUsed.run(randomUUID(), school.id, `LEGACY-${randomUUID()}`, student.id);
+      }
+
+      const activeCount = (db.prepare(`
+        SELECT COUNT(*) AS count FROM school_invitations
+        WHERE school_id = ? AND status != 'revoked'
+      `).get(school.id) as { count: number }).count;
+      for (let i = activeCount; i < school.seats; i++) {
+        insertAvailable.run(randomUUID(), school.id, invitationCode());
+      }
+    }
+  });
+  tx();
+}
+
+backfillSchoolInvitations();

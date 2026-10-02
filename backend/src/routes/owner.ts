@@ -2,6 +2,7 @@ import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
 import { Request, Router } from "express";
 import { db } from "../db";
+import { listSchoolInvitations, replaceInvitation, syncSchoolInvitations } from "../lib/invitations";
 import { authUser, parseProfile } from "./auth";
 
 export const ownerRouter = Router();
@@ -147,8 +148,16 @@ ownerRouter.delete("/students/:id", (req, res) => {
   const owner = requireOwner(req);
   if (!owner) return res.status(403).json({ error: "Owner access required." });
 
+  const student = db.prepare("SELECT school_id AS schoolId FROM users WHERE id = ? AND role = 'student'").get(req.params.id) as { schoolId: string | null } | undefined;
+  if (student?.schoolId) {
+    db.prepare("UPDATE school_invitations SET status = 'revoked', revoked_at = datetime('now') WHERE used_by_user_id = ?").run(req.params.id);
+  }
   const result = db.prepare("DELETE FROM users WHERE id = ? AND role = 'student'").run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ error: "Student not found." });
+  if (student?.schoolId) {
+    const school = db.prepare("SELECT seats FROM schools WHERE id = ?").get(student.schoolId) as { seats: number } | undefined;
+    if (school) syncSchoolInvitations(student.schoolId, school.seats);
+  }
   return res.json({ ok: true });
 });
 
@@ -168,6 +177,7 @@ ownerRouter.post("/schools", (req, res) => {
   db.prepare(
     "INSERT INTO schools (id, name, code, plan, seats) VALUES (?, ?, ?, ?, ?)"
   ).run(id, name, code, plan, seats);
+  syncSchoolInvitations(id, seats);
 
   return res.status(201).json({ school: { id, name, code, plan, seats, students: 0, admins: 0, supportEmail: null, supportPhone: null } });
 });
@@ -222,6 +232,22 @@ ownerRouter.get("/schools/:id/admins", (req, res) => {
     .all(req.params.id) as { id: string; name: string; email: string; created_at: string }[];
 
   return res.json({ admins });
+});
+
+ownerRouter.get("/schools/:id/invitations", (req, res) => {
+  const owner = requireOwner(req);
+  if (!owner) return res.status(403).json({ error: "Owner access required." });
+  const school = db.prepare("SELECT id FROM schools WHERE id = ?").get(req.params.id);
+  if (!school) return res.status(404).json({ error: "School not found." });
+  return res.json({ invitations: listSchoolInvitations(req.params.id) });
+});
+
+ownerRouter.post("/schools/:id/invitations/:invitationId/replace", (req, res) => {
+  const owner = requireOwner(req);
+  if (!owner) return res.status(403).json({ error: "Owner access required." });
+  const invitation = replaceInvitation(req.params.id, req.params.invitationId);
+  if (!invitation) return res.status(400).json({ error: "Only unused invitations can be replaced." });
+  return res.status(201).json({ invitation });
 });
 
 // PATCH /api/owner/admins/:id  { name?, email?, password? }  — edit an admin.
@@ -325,6 +351,7 @@ ownerRouter.patch("/schools/:id", (req, res) => {
     nextSupportPhone,
     schoolId
   );
+  syncSchoolInvitations(schoolId, nextSeats);
   return res.json({ school: { id: schoolId, name: nextName, code: row.code, plan: nextPlan, seats: nextSeats, supportEmail: nextSupportEmail, supportPhone: nextSupportPhone } });
 });
 

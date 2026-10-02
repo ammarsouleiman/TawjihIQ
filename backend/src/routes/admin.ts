@@ -1,5 +1,6 @@
 import { Request, Router } from "express";
 import { db } from "../db";
+import { listSchoolInvitations, replaceInvitation, syncSchoolInvitations } from "../lib/invitations";
 import { authUser, parseProfile } from "./auth";
 
 export const adminRouter = Router();
@@ -60,6 +61,20 @@ function canonicalValue<T>(profile: Record<string, unknown>, mapKey: string, leg
 function arrayValue(profile: Record<string, unknown>, key: string): unknown[] {
   return Array.isArray(profile[key]) ? profile[key] as unknown[] : [];
 }
+
+adminRouter.get("/invitations", (req, res) => {
+  const admin = requireAdmin(req);
+  if (!admin) return res.status(403).json({ error: "Admin access required." });
+  return res.json({ invitations: listSchoolInvitations(admin.schoolId!) });
+});
+
+adminRouter.post("/invitations/:id/replace", (req, res) => {
+  const admin = requireAdmin(req);
+  if (!admin) return res.status(403).json({ error: "Admin access required." });
+  const invitation = replaceInvitation(admin.schoolId!, req.params.id);
+  if (!invitation) return res.status(400).json({ error: "Only unused invitations can be replaced." });
+  return res.status(201).json({ invitation });
+});
 
 type RecData = { majors?: RecMajor[]; gaps?: string[] };
 // The student's canonical recommendations object (en preferred).
@@ -226,9 +241,20 @@ adminRouter.delete("/students/:id", (req, res) => {
   const admin = requireAdmin(req);
   if (!admin) return res.status(403).json({ error: "Admin access required." });
 
-  const result = db
-    .prepare("UPDATE users SET school_id = NULL WHERE id = ? AND school_id = ? AND role = 'student'")
-    .run(req.params.id, admin.schoolId);
+  const result = db.transaction(() => {
+    const changed = db
+      .prepare("UPDATE users SET school_id = NULL WHERE id = ? AND school_id = ? AND role = 'student'")
+      .run(req.params.id, admin.schoolId);
+    if (changed.changes > 0) {
+      db.prepare(`
+        UPDATE school_invitations SET status = 'revoked', revoked_at = datetime('now')
+        WHERE school_id = ? AND used_by_user_id = ?
+      `).run(admin.schoolId, req.params.id);
+    }
+    return changed;
+  })();
   if (result.changes === 0) return res.status(404).json({ error: "Student not found in your school." });
+  const school = db.prepare("SELECT seats FROM schools WHERE id = ?").get(admin.schoolId) as { seats: number } | undefined;
+  if (school) syncSchoolInvitations(admin.schoolId!, school.seats);
   return res.json({ ok: true });
 });
