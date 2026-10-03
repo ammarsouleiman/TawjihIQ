@@ -73,22 +73,67 @@ aiRouter.post("/market", async (req, res) => {
   }
 });
 
-// Checks domain root only (not the full path) — verifies the organization's
-// site is alive. Accepts 2xx/3xx only; rejects 404, 403, timeouts, and errors.
-async function isDomainAlive(url: string): Promise<boolean> {
-  if (!url?.startsWith("https://")) return false;
+const SCHOLARSHIP_TYPES = ["Scholarship", "Fellowship", "Grant", "Internship", "Program"] as const;
+const FUNDING_TYPES = ["Fully Funded", "Partial", "Stipend", "Certificate", "Paid Internship"] as const;
+const BLOCKED_SCHOLARSHIP_HOSTS = [
+  "facebook.com", "instagram.com", "linkedin.com", "x.com", "twitter.com",
+  "scholarshippositions.com", "opportunitiesforafricans.com", "scholarshiproar.com",
+];
+
+type GeneratedScholarship = {
+  id: string;
+  title: string;
+  org: string;
+  type: typeof SCHOLARSHIP_TYPES[number];
+  deadline: string;
+  deadlineISO: string;
+  country: string;
+  tag: typeof FUNDING_TYPES[number];
+  amount?: string;
+  applyUrl: string;
+  match: number;
+  description?: string;
+  verifiedAt: string;
+};
+
+function canonicalEnum<T extends readonly string[]>(value: unknown, allowed: T): T[number] | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return allowed.find((item) => item.toLowerCase() === normalized) ?? null;
+}
+
+// Checks the exact official opportunity/application page—not merely its domain.
+// Third-party aggregators and social links are rejected even when reachable.
+async function isOfficialScholarshipPage(url: string): Promise<boolean> {
   try {
-    const origin = new URL(url).origin;
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") return false;
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (BLOCKED_SCHOLARSHIP_HOSTS.some((blocked) => host === blocked || host.endsWith(`.${blocked}`))) return false;
+
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
+    const timer = setTimeout(() => controller.abort(), 8000);
     try {
-      const res = await fetch(`${origin}/`, {
+      let res = await fetch(parsed.toString(), {
         method: "HEAD",
         redirect: "follow",
         signal: controller.signal,
         headers: { "User-Agent": "Mozilla/5.0 (compatible; TawjihIQ/1.0)" },
       });
-      return res.status >= 200 && res.status < 400;
+      if (res.status === 403 || res.status === 405) {
+        res = await fetch(parsed.toString(), {
+          method: "GET",
+          redirect: "follow",
+          signal: controller.signal,
+          headers: { "User-Agent": "Mozilla/5.0 (compatible; TawjihIQ/1.0)", Range: "bytes=0-2047" },
+        });
+      }
+      if (res.status < 200 || res.status >= 400) return false;
+      const finalUrl = new URL(res.url);
+      const finalHost = finalUrl.hostname.toLowerCase().replace(/^www\./, "");
+      return finalUrl.protocol === "https:" && !BLOCKED_SCHOLARSHIP_HOSTS.some(
+        (blocked) => finalHost === blocked || finalHost.endsWith(`.${blocked}`)
+      );
     } finally {
       clearTimeout(timer);
     }
@@ -105,20 +150,46 @@ aiRouter.post("/scholarships", async (req, res) => {
   // Random seed forces the AI to generate a fresh, different set each call.
   const seed = Math.random().toString(36).slice(2, 10);
   try {
-    const result = await chatJSON<{ scholarships?: unknown[] }>(scholarshipsMessages(profile, lang, seed), 0.9);
+    const result = await chatJSON<{ scholarships?: unknown[] }>(scholarshipsMessages(profile, lang, seed), 0.4);
     const raw: unknown[] = Array.isArray(result?.scholarships) ? result.scholarships : [];
 
-    // Validate every URL in parallel — drop any scholarship whose link is dead.
+    const today = new Date().toISOString().slice(0, 10);
+    // Normalize machine fields, reject malformed/past entries, then validate
+    // the exact official URL in parallel. Unverifiable opportunities are never
+    // shown to students.
     const checks = await Promise.allSettled(
       raw.map(async (s) => {
-        const sc = s as { applyUrl?: string };
-        const alive = await isDomainAlive(sc.applyUrl ?? "");
-        return alive ? s : null;
+        if (!s || typeof s !== "object" || Array.isArray(s)) return null;
+        const sc = s as Record<string, unknown>;
+        const type = canonicalEnum(sc.type, SCHOLARSHIP_TYPES);
+        const tag = canonicalEnum(sc.tag, FUNDING_TYPES);
+        const deadlineISO = typeof sc.deadlineISO === "string" ? sc.deadlineISO.trim() : "";
+        const applyUrl = typeof sc.applyUrl === "string" ? sc.applyUrl.trim() : "";
+        const required = [sc.id, sc.title, sc.org, sc.deadline, sc.country];
+        if (!type || !tag || required.some((value) => typeof value !== "string" || !value.trim())) return null;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(deadlineISO) || deadlineISO < today) return null;
+        if (!(await isOfficialScholarshipPage(applyUrl))) return null;
+
+        return {
+          id: String(sc.id).trim(),
+          title: String(sc.title).trim(),
+          org: String(sc.org).trim(),
+          type,
+          deadline: String(sc.deadline).trim(),
+          deadlineISO,
+          country: String(sc.country).trim(),
+          tag,
+          amount: typeof sc.amount === "string" ? sc.amount.trim() : undefined,
+          applyUrl,
+          match: Math.max(0, Math.min(100, Math.round(Number(sc.match) || 0))),
+          description: typeof sc.description === "string" ? sc.description.trim() : undefined,
+          verifiedAt: today,
+        } satisfies GeneratedScholarship;
       })
     );
-    const scholarships = checks
-      .filter((r): r is PromiseFulfilledResult<unknown> => r.status === "fulfilled" && r.value !== null)
-      .map((r) => r.value);
+    const scholarships: GeneratedScholarship[] = checks.flatMap((result) =>
+      result.status === "fulfilled" && result.value !== null ? [result.value] : []
+    );
 
     res.json({ scholarships });
   } catch (err) {

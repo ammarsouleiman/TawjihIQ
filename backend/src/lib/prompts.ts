@@ -387,13 +387,13 @@ export function scholarshipsMessages(
 
 Non-negotiable rules:
 1. REAL ONLY: Every entry must be a real program you are highly confident exists. Never invent scholarship names, organizations, or URLs.
-2. ACTIVE ONLY — CRITICAL: Never return a scholarship whose application deadline has already passed relative to today (${today}). Only include programs that are:
+2. ACTIVE ONLY — CRITICAL: Never return a scholarship whose application deadline has already passed relative to today (${today}). Every entry MUST have a verified upcoming exact deadline in YYYY-MM-DD format. Only include programs that are:
    - Currently open for applications, OR
    - Opening soon (within the next 6 months), OR
    - Annual programs whose next cycle opens within the next 12 months.
    If you are unsure whether a program is still active, do NOT include it.
 3. ESTABLISHED PROGRAMS ONLY: Every program must have been running CONTINUOUSLY for at least 3 years and be backed by a permanent institution (government, major university, or well-known foundation). Do NOT include one-time grants, pilot programs, or initiatives that may have ended. Prefer flagship programs with stable annual cycles (e.g. Chevening, Fulbright, DAAD, Erasmus+, national government scholarships, well-known university merit awards).
-4. VERIFIED URLs: "applyUrl" must be the REAL official application or information page — only official organizational domains. Never link to Google, news articles, or third-party aggregators.
+4. VERIFIED URLs: "applyUrl" must be the REAL, direct official application or program information page — only official organizational domains. Never link to a generic home page, Google, social media, news articles, or third-party aggregators.
 5. STRICTLY PRIORITIZED by geography — follow this order:
    a. LOCAL (2-3 entries): Scholarships, grants or funded programs offered BY universities, government bodies, or NGOs IN the student's own country.
    b. REGIONAL (2-3 entries): Programs targeting the student's region (Arab world, MENA, GCC, Africa, etc.).
@@ -402,7 +402,7 @@ Non-negotiable rules:
 7. LEVEL-MATCHED: Match the student's current education level.
 8. HONEST MATCH SCORE: Score 0-100 based on eligibility. Local/regional ones generally score higher.
 
-Write all human-readable text in ${langName(lang)}.`,
+The JSON fields "type" and "tag" are machine-readable enums and MUST remain exactly in English as listed in the schema, even when the requested language is Arabic. Write all other human-readable text in ${langName(lang)}.`,
     },
     {
       role: "user",
@@ -429,7 +429,8 @@ Respond with ONLY a valid JSON object (no markdown) of this exact shape:
       "title": string (official program name),
       "org": string (full official organization name),
       "type": one of "Scholarship" | "Fellowship" | "Grant" | "Internship" | "Program",
-      "deadline": string (upcoming deadline, e.g. "November 2025" or "March 2026 annually"),
+      "deadline": string (human-readable upcoming deadline),
+      "deadlineISO": string (the same verified upcoming deadline in strict YYYY-MM-DD format; it must be on or after ${today}),
       "country": string (host/offering country, e.g. "Lebanon", "Germany", "International"),
       "tag": one of "Fully Funded" | "Partial" | "Stipend" | "Certificate" | "Paid Internship",
       "amount": string (what it covers, e.g. "Full tuition + living allowance" or "Up to $5,000"),
@@ -441,7 +442,7 @@ Respond with ONLY a valid JSON object (no markdown) of this exact shape:
 }
 
 Sort by geography first (local → regional → international), then by match descending within each group.
-All human-readable text in ${langName(lang)}.`,
+Keep "type" and "tag" exactly in English. All other human-readable text in ${langName(lang)}.`,
     },
   ];
 }
