@@ -86,14 +86,14 @@ type GeneratedScholarship = {
   org: string;
   type: typeof SCHOLARSHIP_TYPES[number];
   deadline: string;
-  deadlineISO: string;
+  deadlineISO?: string;
   country: string;
   tag: typeof FUNDING_TYPES[number];
   amount?: string;
   applyUrl: string;
   match: number;
   description?: string;
-  verifiedAt: string;
+  verifiedAt?: string;
 };
 
 function canonicalEnum<T extends readonly string[]>(value: unknown, allowed: T): T[number] | null {
@@ -102,14 +102,23 @@ function canonicalEnum<T extends readonly string[]>(value: unknown, allowed: T):
   return allowed.find((item) => item.toLowerCase() === normalized) ?? null;
 }
 
+function isAllowedScholarshipUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") return false;
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    return !BLOCKED_SCHOLARSHIP_HOSTS.some((blocked) => host === blocked || host.endsWith(`.${blocked}`));
+  } catch {
+    return false;
+  }
+}
+
 // Checks the exact official opportunity/application page—not merely its domain.
 // Third-party aggregators and social links are rejected even when reachable.
 async function isOfficialScholarshipPage(url: string): Promise<boolean> {
   try {
     const parsed = new URL(url);
-    if (parsed.protocol !== "https:") return false;
-    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
-    if (BLOCKED_SCHOLARSHIP_HOSTS.some((blocked) => host === blocked || host.endsWith(`.${blocked}`))) return false;
+    if (!isAllowedScholarshipUrl(url)) return false;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
@@ -154,9 +163,9 @@ aiRouter.post("/scholarships", async (req, res) => {
     const raw: unknown[] = Array.isArray(result?.scholarships) ? result.scholarships : [];
 
     const today = new Date().toISOString().slice(0, 10);
-    // Normalize machine fields, reject malformed/past entries, then validate
-    // the exact official URL in parallel. Unverifiable opportunities are never
-    // shown to students.
+    // Normalize machine fields and reject malformed, blocked, or confirmed-past
+    // entries. Reachability is recorded separately: many legitimate university
+    // sites block automated HEAD/GET checks, which must not erase real results.
     const checks = await Promise.allSettled(
       raw.map(async (s) => {
         if (!s || typeof s !== "object" || Array.isArray(s)) return null;
@@ -167,8 +176,10 @@ aiRouter.post("/scholarships", async (req, res) => {
         const applyUrl = typeof sc.applyUrl === "string" ? sc.applyUrl.trim() : "";
         const required = [sc.id, sc.title, sc.org, sc.deadline, sc.country];
         if (!type || !tag || required.some((value) => typeof value !== "string" || !value.trim())) return null;
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(deadlineISO) || deadlineISO < today) return null;
-        if (!(await isOfficialScholarshipPage(applyUrl))) return null;
+        if (!isAllowedScholarshipUrl(applyUrl)) return null;
+        const hasExactDeadline = /^\d{4}-\d{2}-\d{2}$/.test(deadlineISO);
+        if (hasExactDeadline && deadlineISO < today) return null;
+        const linkReachable = await isOfficialScholarshipPage(applyUrl);
 
         return {
           id: String(sc.id).trim(),
@@ -176,14 +187,14 @@ aiRouter.post("/scholarships", async (req, res) => {
           org: String(sc.org).trim(),
           type,
           deadline: String(sc.deadline).trim(),
-          deadlineISO,
+          deadlineISO: hasExactDeadline ? deadlineISO : undefined,
           country: String(sc.country).trim(),
           tag,
           amount: typeof sc.amount === "string" ? sc.amount.trim() : undefined,
           applyUrl,
           match: Math.max(0, Math.min(100, Math.round(Number(sc.match) || 0))),
           description: typeof sc.description === "string" ? sc.description.trim() : undefined,
-          verifiedAt: today,
+          verifiedAt: linkReachable ? today : undefined,
         } satisfies GeneratedScholarship;
       })
     );
