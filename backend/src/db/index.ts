@@ -130,6 +130,7 @@ ensureColumn("users", "role", "TEXT NOT NULL DEFAULT 'student'");
 ensureColumn("users", "school_id", "TEXT");
 ensureColumn("users", "must_change_password", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("users", "temp_password_expires_at", "TEXT");
+ensureColumn("password_reset_requests", "temp_password_enc", "TEXT");
 ensureColumn("schools", "code", "TEXT");
 ensureColumn("schools", "support_email", "TEXT");
 ensureColumn("schools", "support_phone", "TEXT");

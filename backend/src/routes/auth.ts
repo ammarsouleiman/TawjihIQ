@@ -469,6 +469,7 @@ authRouter.post("/complete-password-change", async (req, res) => {
     db.prepare(
       "UPDATE users SET password_hash = ?, must_change_password = 0, temp_password_expires_at = NULL WHERE id = ?"
     ).run(hash, userId);
+    db.prepare("UPDATE password_reset_requests SET temp_password_enc = NULL WHERE user_id = ?").run(userId);
     return res.json({ user: { ...toPublic(row), mustChangePassword: false } });
   } catch (err) {
     console.error("Complete password change error:", err);
@@ -666,6 +667,9 @@ authRouter.patch("/me", async (req, res) => {
       newPassword ? null : row.temp_password_expires_at ?? null,
       userId
     );
+    if (newPassword) {
+      db.prepare("UPDATE password_reset_requests SET temp_password_enc = NULL WHERE user_id = ?").run(userId);
+    }
 
     const user: PublicUser = {
       id: userId,

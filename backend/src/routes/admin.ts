@@ -3,6 +3,7 @@ import { randomInt } from "crypto";
 import { Request, Router } from "express";
 import { db } from "../db";
 import { listSchoolInvitations, replaceInvitation, syncSchoolInvitations } from "../lib/invitations";
+import { decryptSecret, encryptSecret } from "../lib/secret-box";
 import { authUser, parseProfile } from "./auth";
 
 export const adminRouter = Router();
@@ -277,21 +278,64 @@ function tempPassword(): string {
   }
 }
 
+type RequestRow = {
+  id: string;
+  status: string;
+  createdAt: string;
+  resolvedAt: string | null;
+  enc: string | null;
+  studentId: string;
+  studentName: string;
+  studentEmail: string;
+  mustChange: number;
+  expiresAt: string | null;
+  expired: number | null;
+};
+
+// Pending requests, plus handled ones for 24h so the admin can still see the
+// code. The code is only returned while it is the student's live temp password.
 adminRouter.get("/password-requests", (req, res) => {
   const admin = requireAdmin(req);
   if (!admin) return res.status(403).json({ error: "Admin access required." });
-  const requests = db.prepare(`
-    SELECT r.id, r.created_at AS createdAt, u.id AS studentId, u.name AS studentName, u.email AS studentEmail
+  const rows = db.prepare(`
+    SELECT r.id, r.status, r.created_at AS createdAt, r.resolved_at AS resolvedAt, r.temp_password_enc AS enc,
+           u.id AS studentId, u.name AS studentName, u.email AS studentEmail,
+           u.must_change_password AS mustChange, u.temp_password_expires_at AS expiresAt,
+           (u.temp_password_expires_at <= datetime('now')) AS expired
       FROM password_reset_requests r
       JOIN users u ON u.id = r.user_id
-     WHERE r.school_id = ? AND r.status = 'pending' AND u.school_id = r.school_id AND u.role = 'student'
-     ORDER BY r.created_at DESC
-  `).all(admin.schoolId);
+     WHERE r.school_id = ? AND u.school_id = r.school_id AND u.role = 'student'
+       AND (r.status = 'pending'
+            OR (r.status = 'resolved' AND r.resolved_at > datetime('now', '-${TEMP_PASSWORD_TTL_HOURS} hours')))
+     ORDER BY (r.status = 'pending') DESC, COALESCE(r.resolved_at, r.created_at) DESC
+  `).all(admin.schoolId) as RequestRow[];
+
+  const requests = rows.map((r) => {
+    const base = {
+      id: r.id,
+      createdAt: r.createdAt,
+      studentId: r.studentId,
+      studentName: r.studentName,
+      studentEmail: r.studentEmail,
+    };
+    if (r.status === "pending") return { ...base, status: "pending" as const };
+    const live = r.enc && r.mustChange === 1 && !r.expired ? decryptSecret(r.enc) : null;
+    return {
+      ...base,
+      status: "done" as const,
+      resolvedAt: r.resolvedAt,
+      tempPassword: live,
+      expiresAt: live ? r.expiresAt : null,
+      codeState: live ? "active" : r.mustChange === 1 ? "expired" : "changed",
+    };
+  });
+  res.set("Cache-Control", "no-store");
   return res.json({ requests });
 });
 
-// Issues a one-time temporary password (shown to the admin once, stored only
-// as a hash). The student must replace it at next login, within 24h.
+// Issues a temporary password (stored as a bcrypt hash for login, and
+// AES-encrypted on the request so the admin can re-view it until it's used).
+// The student must replace it at next login, within 24h.
 adminRouter.post("/password-requests/:id/resolve", async (req, res) => {
   const admin = requireAdmin(req);
   if (!admin) return res.status(403).json({ error: "Admin access required." });
@@ -311,6 +355,9 @@ adminRouter.post("/password-requests/:id/resolve", async (req, res) => {
        WHERE id = ? AND status = 'pending'
     `).run(admin.id, request.id);
     if (claimed.changes === 0) return false;
+    // Only the newest code is ever viewable.
+    db.prepare("UPDATE password_reset_requests SET temp_password_enc = NULL WHERE user_id = ?").run(request.userId);
+    db.prepare("UPDATE password_reset_requests SET temp_password_enc = ? WHERE id = ?").run(encryptSecret(password), request.id);
     db.prepare(`
       UPDATE users SET password_hash = ?, must_change_password = 1,
              temp_password_expires_at = datetime('now', '+${TEMP_PASSWORD_TTL_HOURS} hours')
@@ -318,7 +365,7 @@ adminRouter.post("/password-requests/:id/resolve", async (req, res) => {
     `).run(hash, request.userId, admin.schoolId);
     // Any duplicate pending requests from the same student are covered by this reset.
     db.prepare(`
-      UPDATE password_reset_requests SET status = 'resolved', resolved_by = ?, resolved_at = datetime('now')
+      UPDATE password_reset_requests SET status = 'dismissed', resolved_by = ?, resolved_at = datetime('now')
        WHERE user_id = ? AND status = 'pending'
     `).run(admin.id, request.userId);
     return true;
