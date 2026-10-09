@@ -431,13 +431,11 @@ authRouter.post("/forgot-password", (req, res) => {
     .prepare("SELECT id, school_id AS schoolId FROM users WHERE email = ? AND role = 'student'")
     .get(email) as { id: string; schoolId: string | null } | undefined;
   if (user?.schoolId) {
+    // One open request per student is enough to keep the admin inbox spam-free.
     const pending = db
       .prepare("SELECT id FROM password_reset_requests WHERE user_id = ? AND status = 'pending'")
       .get(user.id);
-    const today = (db
-      .prepare("SELECT COUNT(*) AS c FROM password_reset_requests WHERE user_id = ? AND created_at > datetime('now', '-1 day')")
-      .get(user.id) as { c: number }).c;
-    if (!pending && today < 3) {
+    if (!pending) {
       db.prepare("INSERT INTO password_reset_requests (id, user_id, school_id) VALUES (?, ?, ?)")
         .run(randomUUID(), user.id, user.schoolId);
     }
