@@ -287,47 +287,58 @@ type RequestRow = {
   studentId: string;
   studentName: string;
   studentEmail: string;
+  profile: string | null;
+  joinedAt: string;
+  schoolName: string | null;
   mustChange: number;
   expiresAt: string | null;
   expired: number | null;
 };
 
-// Pending requests, plus handled ones for 24h so the admin can still see the
-// code. The code is only returned while it is the student's live temp password.
+// Pending requests, plus handled ones while their code is still live (until the
+// student sets a new password, or 24h), so the admin can re-view the code.
 adminRouter.get("/password-requests", (req, res) => {
   const admin = requireAdmin(req);
   if (!admin) return res.status(403).json({ error: "Admin access required." });
   const rows = db.prepare(`
     SELECT r.id, r.status, r.created_at AS createdAt, r.resolved_at AS resolvedAt, r.temp_password_enc AS enc,
-           u.id AS studentId, u.name AS studentName, u.email AS studentEmail,
+           u.id AS studentId, u.name AS studentName, u.email AS studentEmail, u.profile,
+           u.created_at AS joinedAt, s.name AS schoolName,
            u.must_change_password AS mustChange, u.temp_password_expires_at AS expiresAt,
            (u.temp_password_expires_at <= datetime('now')) AS expired
       FROM password_reset_requests r
       JOIN users u ON u.id = r.user_id
+      LEFT JOIN schools s ON s.id = r.school_id
      WHERE r.school_id = ? AND u.school_id = r.school_id AND u.role = 'student'
        AND (r.status = 'pending'
-            OR (r.status = 'resolved' AND r.resolved_at > datetime('now', '-${TEMP_PASSWORD_TTL_HOURS} hours')))
+            OR (r.status = 'resolved' AND r.temp_password_enc IS NOT NULL
+                AND r.resolved_at > datetime('now', '-${TEMP_PASSWORD_TTL_HOURS} hours')))
      ORDER BY (r.status = 'pending') DESC, COALESCE(r.resolved_at, r.created_at) DESC
   `).all(admin.schoolId) as RequestRow[];
 
-  const requests = rows.map((r) => {
+  const requests = rows.flatMap((r): Record<string, unknown>[] => {
+    const profile = parseProfile(r.profile);
+    const text = (key: string) => (typeof profile[key] === "string" ? String(profile[key]).trim() : "");
     const base = {
       id: r.id,
       createdAt: r.createdAt,
       studentId: r.studentId,
-      studentName: r.studentName,
+      studentName: text("fullName") || r.studentName,
       studentEmail: r.studentEmail,
+      student: {
+        schoolName: r.schoolName,
+        profileSchool: text("school"),
+        educationLevel: text("educationLevel"),
+        age: text("age"),
+        city: text("city"),
+        country: text("country"),
+        joinedAt: r.joinedAt,
+      },
     };
-    if (r.status === "pending") return { ...base, status: "pending" as const };
-    const live = r.enc && r.mustChange === 1 && !r.expired ? decryptSecret(r.enc) : null;
-    return {
-      ...base,
-      status: "done" as const,
-      resolvedAt: r.resolvedAt,
-      tempPassword: live,
-      expiresAt: live ? r.expiresAt : null,
-      codeState: live ? "active" : r.mustChange === 1 ? "expired" : "changed",
-    };
+    if (r.status === "pending") return [{ ...base, status: "pending" as const }];
+    const live = r.mustChange === 1 && !r.expired ? decryptSecret(r.enc!) : null;
+    if (!live) return [];
+    return [{ ...base, status: "done" as const, resolvedAt: r.resolvedAt, tempPassword: live, expiresAt: r.expiresAt }];
   });
   res.set("Cache-Control", "no-store");
   return res.json({ requests });
