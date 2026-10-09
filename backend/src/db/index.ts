@@ -102,6 +102,21 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_school_invitations_school_status
     ON school_invitations(school_id, status, created_at);
+
+  CREATE TABLE IF NOT EXISTS password_reset_requests (
+    id           TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    school_id    TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    resolved_by  TEXT,
+    resolved_at  TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (school_id) REFERENCES schools(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_password_reset_requests_school
+    ON password_reset_requests(school_id, status, created_at DESC);
 `);
 
 // ---- Migrations: add columns to existing installs without dropping data -----
@@ -113,6 +128,8 @@ function ensureColumn(table: string, column: string, definition: string) {
 }
 ensureColumn("users", "role", "TEXT NOT NULL DEFAULT 'student'");
 ensureColumn("users", "school_id", "TEXT");
+ensureColumn("users", "must_change_password", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("users", "temp_password_expires_at", "TEXT");
 ensureColumn("schools", "code", "TEXT");
 ensureColumn("schools", "support_email", "TEXT");
 ensureColumn("schools", "support_phone", "TEXT");

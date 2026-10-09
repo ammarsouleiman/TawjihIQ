@@ -1,3 +1,5 @@
+import bcrypt from "bcryptjs";
+import { randomInt } from "crypto";
 import { Request, Router } from "express";
 import { db } from "../db";
 import { listSchoolInvitations, replaceInvitation, syncSchoolInvitations } from "../lib/invitations";
@@ -259,5 +261,80 @@ adminRouter.delete("/students/:id", (req, res) => {
   if (result.changes === 0) return res.status(404).json({ error: "Student not found in your school." });
   const school = db.prepare("SELECT seats FROM schools WHERE id = ?").get(admin.schoolId) as { seats: number } | undefined;
   if (school) syncSchoolInvitations(admin.schoolId!, school.seats);
+  return res.json({ ok: true });
+});
+
+// ---- Password reset inbox ---------------------------------------------------
+const TEMP_PASSWORD_TTL_HOURS = 24;
+// No look-alike characters (0/O, 1/l/I) so it can be read out or written down.
+const TEMP_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+
+function tempPassword(): string {
+  for (;;) {
+    let raw = "";
+    for (let i = 0; i < 12; i++) raw += TEMP_ALPHABET[randomInt(TEMP_ALPHABET.length)];
+    if (/[A-Za-z]/.test(raw) && /\d/.test(raw)) return `${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8)}`;
+  }
+}
+
+adminRouter.get("/password-requests", (req, res) => {
+  const admin = requireAdmin(req);
+  if (!admin) return res.status(403).json({ error: "Admin access required." });
+  const requests = db.prepare(`
+    SELECT r.id, r.created_at AS createdAt, u.id AS studentId, u.name AS studentName, u.email AS studentEmail
+      FROM password_reset_requests r
+      JOIN users u ON u.id = r.user_id
+     WHERE r.school_id = ? AND r.status = 'pending' AND u.school_id = r.school_id AND u.role = 'student'
+     ORDER BY r.created_at DESC
+  `).all(admin.schoolId);
+  return res.json({ requests });
+});
+
+// Issues a one-time temporary password (shown to the admin once, stored only
+// as a hash). The student must replace it at next login, within 24h.
+adminRouter.post("/password-requests/:id/resolve", async (req, res) => {
+  const admin = requireAdmin(req);
+  if (!admin) return res.status(403).json({ error: "Admin access required." });
+
+  const request = db.prepare(`
+    SELECT r.id, r.user_id AS userId FROM password_reset_requests r
+      JOIN users u ON u.id = r.user_id
+     WHERE r.id = ? AND r.school_id = ? AND r.status = 'pending' AND u.school_id = r.school_id AND u.role = 'student'
+  `).get(req.params.id, admin.schoolId) as { id: string; userId: string } | undefined;
+  if (!request) return res.status(404).json({ error: "Request not found or already handled." });
+
+  const password = tempPassword();
+  const hash = await bcrypt.hash(password, 12);
+  const done = db.transaction(() => {
+    const claimed = db.prepare(`
+      UPDATE password_reset_requests SET status = 'resolved', resolved_by = ?, resolved_at = datetime('now')
+       WHERE id = ? AND status = 'pending'
+    `).run(admin.id, request.id);
+    if (claimed.changes === 0) return false;
+    db.prepare(`
+      UPDATE users SET password_hash = ?, must_change_password = 1,
+             temp_password_expires_at = datetime('now', '+${TEMP_PASSWORD_TTL_HOURS} hours')
+       WHERE id = ? AND school_id = ? AND role = 'student'
+    `).run(hash, request.userId, admin.schoolId);
+    // Any duplicate pending requests from the same student are covered by this reset.
+    db.prepare(`
+      UPDATE password_reset_requests SET status = 'resolved', resolved_by = ?, resolved_at = datetime('now')
+       WHERE user_id = ? AND status = 'pending'
+    `).run(admin.id, request.userId);
+    return true;
+  })();
+  if (!done) return res.status(409).json({ error: "Request was already handled." });
+  res.set("Cache-Control", "no-store");
+  return res.json({ tempPassword: password, expiresInHours: TEMP_PASSWORD_TTL_HOURS });
+});
+
+adminRouter.post("/password-requests/:id/dismiss", (req, res) => {
+  const admin = requireAdmin(req);
+  if (!admin) return res.status(403).json({ error: "Admin access required." });
+  const result = db.prepare(`
+    UPDATE password_reset_requests SET status = 'dismissed', resolved_by = ?, resolved_at = datetime('now')
+     WHERE id = ? AND school_id = ? AND status = 'pending'
+  `).run(admin.id, req.params.id, admin.schoolId);
+  if (result.changes === 0) return res.status(404).json({ error: "Request not found or already handled." });
   return res.json({ ok: true });
 });

@@ -21,6 +21,8 @@ type UserRow = {
   role: string | null;
   school_id: string | null;
   school_name?: string | null;
+  must_change_password?: number | null;
+  temp_password_expires_at?: string | null;
   created_at: string;
 };
 
@@ -49,6 +51,35 @@ function toPublic(row: UserRow): PublicUser {
 
 function signToken(user: PublicUser): string {
   return jwt.sign(user, JWT_SECRET, { expiresIn: TOKEN_TTL });
+}
+
+// Response shape only — mustChangePassword is read fresh from the DB, never from the JWT.
+function sessionUser(row: UserRow) {
+  return { ...toPublic(row), mustChangePassword: row.must_change_password === 1 };
+}
+
+export function passwordPolicyError(password: string): string | null {
+  if (password.length < 8) return "Password must be at least 8 characters.";
+  // bcrypt ignores anything past 72 bytes.
+  if (Buffer.byteLength(password, "utf8") > 72) return "Password is too long.";
+  if (!/[A-Za-z\u0600-\u06FF]/.test(password) || !/\d/.test(password)) {
+    return "Password must contain at least one letter and one number.";
+  }
+  return null;
+}
+
+// In-memory fixed-window limiter, keyed per IP.
+const rateHits = new Map<string, { count: number; resetAt: number }>();
+function rateLimited(key: string, limit: number, windowMs: number): boolean {
+  const now = Date.now();
+  const entry = rateHits.get(key);
+  if (!entry || entry.resetAt <= now) {
+    if (rateHits.size > 10_000) rateHits.clear();
+    rateHits.set(key, { count: 1, resetAt: now + windowMs });
+    return false;
+  }
+  entry.count += 1;
+  return entry.count > limit;
 }
 
 export function parseProfile(raw: string | null): ProfileData {
@@ -359,9 +390,19 @@ authRouter.post("/login", async (req, res) => {
     if (!ok) {
       return res.status(401).json({ error: "Invalid email or password." });
     }
+    if (row.must_change_password === 1) {
+      const { expired } = db
+        .prepare("SELECT COALESCE(temp_password_expires_at <= datetime('now'), 1) AS expired FROM users WHERE id = ?")
+        .get(row.id) as { expired: number };
+      if (expired) {
+        return res.status(403).json({
+          error: "Your temporary password has expired. Use “Forgot password?” to ask your school for a new one.",
+        });
+      }
+    }
     const user = toPublic(row);
     setSessionCookie(res, signToken(user));
-    return res.json({ user });
+    return res.json({ user: sessionUser(row) });
   } catch (err) {
     console.error("Login error:", err);
     return res.status(500).json({ error: "Could not log you in." });
@@ -374,6 +415,67 @@ authRouter.post("/logout", (_req, res) => {
   return res.json({ ok: true });
 });
 
+// POST /api/auth/forgot-password  { email }
+// Files a reset request in the student's school admin inbox. The reply is
+// identical whether or not the account exists, to prevent account discovery.
+authRouter.post("/forgot-password", (req, res) => {
+  const email = String(req.body?.email ?? "").trim().toLowerCase();
+  if (email.length > 254 || !EMAIL_RE.test(email)) {
+    return res.status(400).json({ error: "Please enter a valid email address." });
+  }
+  if (rateLimited(`forgot:${req.ip}`, 5, 15 * 60 * 1000)) {
+    return res.status(429).json({ error: "Too many requests. Please try again later." });
+  }
+
+  const user = db
+    .prepare("SELECT id, school_id AS schoolId FROM users WHERE email = ? AND role = 'student'")
+    .get(email) as { id: string; schoolId: string | null } | undefined;
+  if (user?.schoolId) {
+    const pending = db
+      .prepare("SELECT id FROM password_reset_requests WHERE user_id = ? AND status = 'pending'")
+      .get(user.id);
+    const today = (db
+      .prepare("SELECT COUNT(*) AS c FROM password_reset_requests WHERE user_id = ? AND created_at > datetime('now', '-1 day')")
+      .get(user.id) as { c: number }).c;
+    if (!pending && today < 3) {
+      db.prepare("INSERT INTO password_reset_requests (id, user_id, school_id) VALUES (?, ?, ?)")
+        .run(randomUUID(), user.id, user.schoolId);
+    }
+  }
+  return res.json({ ok: true, supportEmail: DEFAULT_SUPPORT_EMAIL });
+});
+
+// POST /api/auth/complete-password-change  { newPassword }
+// Replaces a temporary password issued by the school admin.
+authRouter.post("/complete-password-change", async (req, res) => {
+  const userId = authUserId(req);
+  if (!userId) return res.status(401).json({ error: "Not authenticated." });
+  const row = db
+    .prepare("SELECT u.*, s.name AS school_name FROM users u LEFT JOIN schools s ON s.id = u.school_id WHERE u.id = ?")
+    .get(userId) as UserRow | undefined;
+  if (!row) return res.status(401).json({ error: "Invalid or expired session." });
+  if (row.must_change_password !== 1) {
+    return res.status(400).json({ error: "No password change is required." });
+  }
+
+  const newPassword = String(req.body?.newPassword ?? "");
+  const policyError = passwordPolicyError(newPassword);
+  if (policyError) return res.status(400).json({ error: policyError });
+  try {
+    if (await bcrypt.compare(newPassword, row.password_hash)) {
+      return res.status(400).json({ error: "Choose a password different from the temporary one." });
+    }
+    const hash = await bcrypt.hash(newPassword, 12);
+    db.prepare(
+      "UPDATE users SET password_hash = ?, must_change_password = 0, temp_password_expires_at = NULL WHERE id = ?"
+    ).run(hash, userId);
+    return res.json({ user: { ...toPublic(row), mustChangePassword: false } });
+  } catch (err) {
+    console.error("Complete password change error:", err);
+    return res.status(500).json({ error: "Could not update your password." });
+  }
+});
+
 // GET /api/auth/me  — current user from the session cookie.
 authRouter.get("/me", (req, res) => {
   const userId = authUserId(req);
@@ -384,7 +486,7 @@ authRouter.get("/me", (req, res) => {
   if (!row) {
     return res.status(401).json({ error: "Invalid or expired session." });
   }
-  return res.json({ user: toPublic(row) });
+  return res.json({ user: sessionUser(row) });
 });
 
 // GET /api/auth/support — returns the correct support channel for the current
@@ -555,8 +657,15 @@ authRouter.patch("/me", async (req, res) => {
     }
 
     db.prepare(
-      "UPDATE users SET name = ?, email = ?, password_hash = ? WHERE id = ?"
-    ).run(nextName, nextEmail, nextPasswordHash, userId);
+      "UPDATE users SET name = ?, email = ?, password_hash = ?, must_change_password = ?, temp_password_expires_at = ? WHERE id = ?"
+    ).run(
+      nextName,
+      nextEmail,
+      nextPasswordHash,
+      newPassword ? 0 : row.must_change_password ?? 0,
+      newPassword ? null : row.temp_password_expires_at ?? null,
+      userId
+    );
 
     const user: PublicUser = {
       id: userId,
