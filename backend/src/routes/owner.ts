@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { Request, Router } from "express";
 import { db } from "../db";
 import { listSchoolInvitations, replaceInvitation, syncSchoolInvitations } from "../lib/invitations";
+import { addSupportMessage, listSupportMessages, markSupportRead } from "../lib/support";
 import { authUser, parseProfile } from "./auth";
 
 export const ownerRouter = Router();
@@ -372,4 +373,42 @@ ownerRouter.delete("/schools/:id", (req, res) => {
   });
   tx();
   return res.json({ ok: true });
+});
+
+// ---- Support chat with school admins (one thread per school) ----------------
+// Every school, with its latest message and unread count; active threads first.
+ownerRouter.get("/support", (req, res) => {
+  const owner = requireOwner(req);
+  if (!owner) return res.status(403).json({ error: "Owner access required." });
+  const threads = db.prepare(`
+    SELECT s.id AS schoolId, s.name AS schoolName, s.code AS schoolCode,
+           (SELECT body FROM support_messages m WHERE m.school_id = s.id ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1) AS lastMessage,
+           (SELECT sender_role FROM support_messages m WHERE m.school_id = s.id ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1) AS lastSenderRole,
+           (SELECT MAX(created_at) FROM support_messages m WHERE m.school_id = s.id) AS lastAt,
+           (SELECT COUNT(*) FROM support_messages m WHERE m.school_id = s.id AND m.sender_role = 'admin' AND m.read_at IS NULL) AS unread
+      FROM schools s
+     ORDER BY lastAt IS NULL, lastAt DESC, s.name COLLATE NOCASE
+  `).all();
+  return res.json({ threads });
+});
+
+function schoolExists(schoolId: string): boolean {
+  return !!db.prepare("SELECT id FROM schools WHERE id = ?").get(schoolId);
+}
+
+ownerRouter.get("/support/:schoolId", (req, res) => {
+  const owner = requireOwner(req);
+  if (!owner) return res.status(403).json({ error: "Owner access required." });
+  if (!schoolExists(req.params.schoolId)) return res.status(404).json({ error: "School not found." });
+  markSupportRead(req.params.schoolId, "owner");
+  return res.json({ messages: listSupportMessages(req.params.schoolId) });
+});
+
+ownerRouter.post("/support/:schoolId", (req, res) => {
+  const owner = requireOwner(req);
+  if (!owner) return res.status(403).json({ error: "Owner access required." });
+  if (!schoolExists(req.params.schoolId)) return res.status(404).json({ error: "School not found." });
+  const result = addSupportMessage(req.params.schoolId, owner.id, "owner", req.body?.body);
+  if ("error" in result) return res.status(400).json(result);
+  return res.status(201).json(result);
 });

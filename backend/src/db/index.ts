@@ -117,6 +117,22 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_password_reset_requests_school
     ON password_reset_requests(school_id, status, created_at DESC);
+
+  -- One support conversation per school, between its admins and the owner.
+  CREATE TABLE IF NOT EXISTS support_messages (
+    id           TEXT PRIMARY KEY,
+    school_id    TEXT NOT NULL,
+    sender_id    TEXT,
+    sender_role  TEXT NOT NULL,
+    body         TEXT NOT NULL,
+    read_at      TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (school_id) REFERENCES schools(id) ON DELETE CASCADE,
+    FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE SET NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_support_messages_school
+    ON support_messages(school_id, created_at);
 `);
 
 // ---- Migrations: add columns to existing installs without dropping data -----

@@ -4,6 +4,7 @@ import { Request, Router } from "express";
 import { db } from "../db";
 import { listSchoolInvitations, replaceInvitation, syncSchoolInvitations } from "../lib/invitations";
 import { decryptSecret, encryptSecret } from "../lib/secret-box";
+import { addSupportMessage, listSupportMessages, markSupportRead, supportUnread } from "../lib/support";
 import { authUser, parseProfile } from "./auth";
 
 export const adminRouter = Router();
@@ -395,4 +396,26 @@ adminRouter.post("/password-requests/:id/dismiss", (req, res) => {
   `).run(admin.id, req.params.id, admin.schoolId);
   if (result.changes === 0) return res.status(404).json({ error: "Request not found or already handled." });
   return res.json({ ok: true });
+});
+
+// ---- Support chat with the TawjihIQ owner (one thread per school) ------------
+adminRouter.get("/support", (req, res) => {
+  const admin = requireAdmin(req);
+  if (!admin) return res.status(403).json({ error: "Admin access required." });
+  markSupportRead(admin.schoolId!, "admin");
+  return res.json({ messages: listSupportMessages(admin.schoolId!) });
+});
+
+adminRouter.get("/support/unread", (req, res) => {
+  const admin = requireAdmin(req);
+  if (!admin) return res.status(403).json({ error: "Admin access required." });
+  return res.json({ count: supportUnread(admin.schoolId!, "admin") });
+});
+
+adminRouter.post("/support", (req, res) => {
+  const admin = requireAdmin(req);
+  if (!admin) return res.status(403).json({ error: "Admin access required." });
+  const result = addSupportMessage(admin.schoolId!, admin.id, "admin", req.body?.body);
+  if ("error" in result) return res.status(400).json(result);
+  return res.status(201).json(result);
 });
