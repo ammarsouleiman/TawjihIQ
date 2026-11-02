@@ -9,8 +9,7 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc",
-    "start": "npm run build && node server.js",
-    "postinstall": "npm rebuild better-sqlite3 --build-from-source"
+    "start": "npm run build && node server.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

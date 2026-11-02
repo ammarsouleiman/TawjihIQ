@@ -241,8 +241,9 @@ authRouter.post("/signup/validate", (req, res) => {
   }
 
   let reservationToken: string | undefined;
+  let schoolName: string | undefined;
   if (schoolCode) {
-    const school = db.prepare("SELECT id FROM schools WHERE code = ?").get(schoolCode) as { id: string } | undefined;
+    const school = db.prepare("SELECT id, name FROM schools WHERE code = ?").get(schoolCode) as { id: string; name: string } | undefined;
     if (!school) return res.status(400).json({ error: "Invalid school code." });
     releaseExpiredReservations(school.id);
     const invitation = db.prepare(`
@@ -256,6 +257,7 @@ authRouter.post("/signup/validate", (req, res) => {
     if (invitation.status === "reserved" && invitation.reservedEmail !== email) {
       return res.status(409).json({ error: "This personal invitation is currently reserved by another student." });
     }
+    schoolName = school.name;
     reservationToken = randomUUID();
     const reserved = db.prepare(`
       UPDATE school_invitations
@@ -267,7 +269,7 @@ authRouter.post("/signup/validate", (req, res) => {
       return res.status(409).json({ error: "This personal invitation was just reserved by another student." });
     }
   }
-  return res.json({ ok: true, reservationToken });
+  return res.json({ ok: true, reservationToken, schoolName });
 });
 
 // POST /api/auth/signup  { name, email, password, schoolCode?, profile }
@@ -308,6 +310,8 @@ authRouter.post("/signup", async (req, res) => {
     }
     schoolId = school.id;
     schoolName = school.name;
+    // The school is always derived from the school code, never typed by the student.
+    profile.school = school.name;
     if (!invitationCode || !reservationToken) {
       return res.status(400).json({ error: "Your personal invitation reservation is missing. Start registration again." });
     }
