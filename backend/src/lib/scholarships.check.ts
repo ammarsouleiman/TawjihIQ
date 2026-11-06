@@ -58,6 +58,11 @@ function run() {
 // 6. Parsing of a Responses API payload (fetch mocked).
 async function parseCheck() {
   process.env.OPENAI_API_KEY = "test";
+  // The search model must come from .env — no built-in default.
+  delete process.env.OPENAI_SEARCH_MODEL;
+  await assert.rejects(searchJSON({ instructions: "i", input: "x" }), /OPENAI_SEARCH_MODEL is required/);
+  process.env.OPENAI_SEARCH_MODEL = "test-search-model";
+  process.env.OPENAI_SEARCH_REASONING = "low";
   const payload = {
     output: [
       { type: "web_search_call", action: { sources: [{ url: "https://www.aub.edu.lb/aid" }] } },
@@ -77,6 +82,8 @@ async function parseCheck() {
   assert.deepEqual(r.sources.sort(), ["https://lau.edu.lb/fa", "https://www.aub.edu.lb/aid"]);
   assert.equal((sentBody.tools as { type: string }[])[0].type, "web_search");
   assert.equal(sentBody.tool_choice, "required");
+  assert.equal(sentBody.model, "test-search-model", "model is read from the environment");
+  assert.deepEqual(sentBody.reasoning, { effort: "low" }, "reasoning effort is read from the environment");
   console.log("searchJSON parse: all checks passed");
 }
 

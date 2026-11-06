@@ -122,9 +122,9 @@ export async function chatJSON<T>(
 // ---- Live web search (Responses API) ------------------------------------------
 
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
-// Web search needs a model that supports the hosted `web_search` tool. Kept
-// separate from OPENAI_MODEL so chat features keep their cheaper model.
-const OPENAI_SEARCH_DEFAULT_MODEL = "gpt-5";
+// Web search needs a model that supports the hosted `web_search` tool. It is
+// configured only through backend/.env (OPENAI_SEARCH_MODEL), separate from
+// OPENAI_MODEL so chat features keep their own model.
 
 export type SearchResult<T> = {
   data: T;
@@ -162,9 +162,10 @@ export async function searchJSON<T>(params: {
 }): Promise<SearchResult<T>> {
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) throw new Error("OPENAI_API_KEY is required in backend/.env.");
-  const model = process.env.OPENAI_SEARCH_MODEL?.trim() || OPENAI_SEARCH_DEFAULT_MODEL;
-  const effort = process.env.OPENAI_SEARCH_REASONING?.trim() || "low";
-  const isReasoning = /^(gpt-5|gpt-6|o\d)/i.test(model);
+  const model = process.env.OPENAI_SEARCH_MODEL?.trim();
+  if (!model) throw new Error("OPENAI_SEARCH_MODEL is required in backend/.env for live web search.");
+  // Optional: reasoning effort for reasoning models (e.g. "low", "medium", "high").
+  const effort = process.env.OPENAI_SEARCH_REASONING?.trim();
 
   const body: Record<string, unknown> = {
     model,
@@ -180,7 +181,7 @@ export async function searchJSON<T>(params: {
     tool_choice: "required",
     include: ["web_search_call.action.sources"],
   };
-  if (isReasoning) body.reasoning = { effort };
+  if (effort) body.reasoning = { effort };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), params.timeoutMs ?? 150_000);
