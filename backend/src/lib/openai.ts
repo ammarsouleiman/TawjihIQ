@@ -119,3 +119,99 @@ export async function chatJSON<T>(
     throw new Error("Failed to parse JSON from AI response.");
   }
 }
+// ---- Live web search (Responses API) ------------------------------------------
+
+const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
+// Web search needs a model that supports the hosted `web_search` tool. Kept
+// separate from OPENAI_MODEL so chat features keep their cheaper model.
+const OPENAI_SEARCH_DEFAULT_MODEL = "gpt-5";
+
+export type SearchResult<T> = {
+  data: T;
+  /** Every URL the model cited or consulted during the search. */
+  sources: string[];
+  model: string;
+};
+
+type ResponsesOutputItem = {
+  type?: string;
+  content?: { type?: string; text?: string; annotations?: { type?: string; url?: string }[] }[];
+  action?: { sources?: { url?: string }[] };
+};
+
+function parseJSONLoose<T>(raw: string): T {
+  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch {
+    const match = cleaned.match(/[[{][\s\S]*[\]}]/);
+    if (match) return JSON.parse(match[0]) as T;
+    throw new Error("Failed to parse JSON from AI response.");
+  }
+}
+
+/**
+ * Run a prompt with OpenAI's hosted web search and parse a JSON answer.
+ * Throws on any failure so callers can fall back to a non-search path.
+ */
+export async function searchJSON<T>(params: {
+  instructions: string;
+  input: string;
+  country?: string;
+  timeoutMs?: number;
+}): Promise<SearchResult<T>> {
+  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  if (!apiKey) throw new Error("OPENAI_API_KEY is required in backend/.env.");
+  const model = process.env.OPENAI_SEARCH_MODEL?.trim() || OPENAI_SEARCH_DEFAULT_MODEL;
+  const effort = process.env.OPENAI_SEARCH_REASONING?.trim() || "low";
+  const isReasoning = /^(gpt-5|gpt-6|o\d)/i.test(model);
+
+  const body: Record<string, unknown> = {
+    model,
+    instructions: params.instructions,
+    input: params.input,
+    tools: [
+      {
+        type: "web_search",
+        search_context_size: "medium",
+        ...(params.country ? { user_location: { type: "approximate", country: params.country } } : {}),
+      },
+    ],
+    tool_choice: "required",
+    include: ["web_search_call.action.sources"],
+  };
+  if (isReasoning) body.reasoning = { effort };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), params.timeoutMs ?? 150_000);
+  try {
+    const res = await fetch(OPENAI_RESPONSES_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(`openai web search failed (${res.status}) [${model}]: ${await res.text()}`);
+    }
+    const data = (await res.json()) as { output?: ResponsesOutputItem[] };
+    const output = Array.isArray(data.output) ? data.output : [];
+    const texts: string[] = [];
+    const sources = new Set<string>();
+    for (const item of output) {
+      if (item.type === "message") {
+        for (const c of item.content ?? []) {
+          if (c.type === "output_text" && typeof c.text === "string") texts.push(c.text);
+          for (const a of c.annotations ?? []) if (a.type === "url_citation" && a.url) sources.add(a.url);
+        }
+      } else if (item.type === "web_search_call") {
+        for (const s of item.action?.sources ?? []) if (s.url) sources.add(s.url);
+      }
+    }
+    const text = texts.join("\n").trim();
+    if (!text) throw new Error(`openai web search returned no text [${model}].`);
+    return { data: parseJSONLoose<T>(text), sources: [...sources], model };
+  } finally {
+    clearTimeout(timer);
+  }
+}

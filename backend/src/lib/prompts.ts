@@ -372,78 +372,114 @@ Provide AT LEAST 20 questions (aim for 20-24), each on a DIFFERENT dimension. Al
   ];
 }
 
-/** Find real, applyable scholarships/programs matched to the student's profile. */
-export function scholarshipsMessages(
-  profile: UserProfile,
-  lang: Lang,
-  seed?: string
-): ChatMessage[] {
-  const today = new Date().toISOString().split("T")[0];
-  const seedLine = seed ? `\n\nSession ID: ${seed}. Generate a FRESH, DIFFERENT set of scholarships — do NOT repeat programs from any previous search.` : "";
-  return [
-    {
-      role: "system",
-      content: `You are TawjihIQ's scholarship advisor. Today's date is ${today}. You identify REAL, currently ACTIVE scholarships, fellowships, funded programs and internships that THIS specific student can realistically apply for.
-
-Non-negotiable rules:
-1. REAL ONLY: Every entry must be a real program you are highly confident exists. Never invent scholarship names, organizations, or URLs.
-2. ACTIVE ONLY — CRITICAL: Never return a scholarship whose application deadline has already passed relative to today (${today}). Every entry MUST have a verified upcoming exact deadline in YYYY-MM-DD format. Only include programs that are:
-   - Currently open for applications, OR
-   - Opening soon (within the next 6 months), OR
-   - Annual programs whose next cycle opens within the next 12 months.
-   If you are unsure whether a program is still active, do NOT include it.
-3. ESTABLISHED PROGRAMS ONLY: Every program must have been running CONTINUOUSLY for at least 3 years and be backed by a permanent institution (government, major university, or well-known foundation). Do NOT include one-time grants, pilot programs, or initiatives that may have ended. Prefer flagship programs with stable annual cycles (e.g. Chevening, Fulbright, DAAD, Erasmus+, national government scholarships, well-known university merit awards).
-4. VERIFIED URLs: "applyUrl" must be the REAL, direct official application or program information page — only official organizational domains. Never link to a generic home page, Google, social media, news articles, or third-party aggregators.
-5. STRICTLY PRIORITIZED by geography — follow this order:
-   a. LOCAL (2-3 entries): Scholarships, grants or funded programs offered BY universities, government bodies, or NGOs IN the student's own country.
-   b. REGIONAL (2-3 entries): Programs targeting the student's region (Arab world, MENA, GCC, Africa, etc.).
-   c. INTERNATIONAL (3-4 entries): Globally recognized fully-funded or partial scholarships genuinely open to students from the student's country.
-6. FIELD-MATCHED: Every scholarship must be relevant to the student's field of study or career direction.
-7. LEVEL-MATCHED: Match the student's current education level.
-8. HONEST MATCH SCORE: Score 0-100 based on eligibility. Local/regional ones generally score higher.
-
-The JSON fields "type" and "tag" are machine-readable enums and MUST remain exactly in English as listed in the schema, even when the requested language is Arabic. Write all other human-readable text in ${langName(lang)}.`,
-    },
-    {
-      role: "user",
-      content: `Today's date: ${today}${seedLine}
-
-Student profile (JSON):
-
-${JSON.stringify(profile, null, 2)}
-
-First, identify the student's country, education level, and field of study from the profile above.
-
-Then generate 8–10 real, CURRENTLY ACTIVE scholarships following this STRICT ORDER:
-1. Start with 2-3 LOCAL scholarships/programs available IN the student's own country
-2. Then 2-3 REGIONAL programs targeting their region (Arab world / MENA / their continent)
-3. Then 3-4 INTERNATIONAL fully-funded or partial scholarships genuinely open to their nationality
-
-IMPORTANT: Do NOT include any scholarship whose deadline has already passed in ${today.slice(0, 4)} without a confirmed upcoming cycle. Each must match their field and education level.
-
-Respond with ONLY a valid JSON object (no markdown) of this exact shape:
-{
-  "scholarships": [
-    {
-      "id": string (short slug, e.g. "aub-fellowship-lb"),
-      "title": string (official program name),
-      "org": string (full official organization name),
-      "type": one of "Scholarship" | "Fellowship" | "Grant" | "Internship" | "Program",
-      "deadline": string (human-readable upcoming deadline),
-      "deadlineISO": string (the same verified upcoming deadline in strict YYYY-MM-DD format; it must be on or after ${today}),
-      "country": string (host/offering country, e.g. "Lebanon", "Germany", "International"),
-      "tag": one of "Fully Funded" | "Partial" | "Stipend" | "Certificate" | "Paid Internship",
-      "amount": string (what it covers, e.g. "Full tuition + living allowance" or "Up to $5,000"),
-      "applyUrl": string (REAL official URL — must start with https://),
-      "match": number (0-100 — realistic eligibility match for THIS student),
-      "description": string (2 sentences: what the program is AND why it specifically suits THIS student's profile — reference their field, country, or goals)
-    }
-  ]
+/** A compact, privacy-light summary of the student for scholarship search. */
+export function scholarshipStudentSummary(profile: UserProfile) {
+  const p = profile as Record<string, unknown>;
+  const str = (k: string) => (typeof p[k] === "string" ? (p[k] as string).trim() : "");
+  const list = (k: string) => (Array.isArray(p[k]) ? (p[k] as unknown[]).filter((x) => typeof x === "string").slice(0, 6) : []);
+  const recByLang = (p.recommendationsByLang ?? {}) as Record<string, { majors?: { name?: string; match?: number }[] }>;
+  const anyRec = Object.values(recByLang)[0];
+  const topMajors = (anyRec?.majors ?? []).slice(0, 3).map((m) => m?.name).filter(Boolean);
+  const report = (p.assessmentReport ?? null) as { archetype?: { title?: string }; strengths?: string[] } | null;
+  return {
+    country: str("country") || "Lebanon",
+    city: str("city"),
+    age: str("age"),
+    educationLevel: str("educationLevel"),
+    schoolSystem: str("schoolSystem"),
+    currentTrack: str("currentMajor"),
+    gradeAverage: str("gpa"),
+    favoriteSubjects: list("favoriteSubjects"),
+    weakSubjects: list("weakSubjects"),
+    interests: list("interests"),
+    fieldsOfInterest: list("fields"),
+    preferredStudyCountry: str("futureCountry"),
+    preferredLanguage: str("preferredLanguage"),
+    topMatchedMajors: topMajors,
+    profileType: report?.archetype?.title ?? "",
+    strengths: Array.isArray(report?.strengths) ? report!.strengths!.slice(0, 4) : [],
+  };
 }
 
-Sort by geography first (local → regional → international), then by match descending within each group.
-Keep "type" and "tag" exactly in English. All other human-readable text in ${langName(lang)}.`,
-    },
+const SCHOLARSHIP_SCHEMA = (today: string) => `Respond with ONLY a valid JSON object (no markdown, no commentary) of this exact shape:
+{
+  "targetLevel": string (the study level you searched for, e.g. "Undergraduate (first university degree)"),
+  "scholarships": [
+    {
+      "id": string (short stable slug, e.g. "aub-financial-aid"),
+      "title": string (official program name),
+      "org": string (full official organization name),
+      "category": one of "University aid" | "Government" | "Foundation" | "Program",
+      "type": one of "Scholarship" | "Fellowship" | "Grant" | "Internship" | "Program",
+      "level": string (study level the program funds, e.g. "Undergraduate"),
+      "country": string (where the student would study, e.g. "Lebanon", "Hungary", "Online"),
+      "tag": one of "Fully Funded" | "Partial" | "Stipend" | "Certificate" | "Paid Internship",
+      "amount": string (what it covers, exactly as stated by the official source; "" if not stated),
+      "deadline": string (human-readable; if the date is not published yet write e.g. "Usually opens in January – check the official page"),
+      "deadlineISO": string ("YYYY-MM-DD" ONLY if this exact upcoming date (on or after ${today}) is published on an official page you read; otherwise ""),
+      "deadlineStatus": one of "confirmed" | "estimated" | "rolling" | "unknown"
+        ("confirmed" = exact upcoming date read on the official page; "estimated" = based on previous cycles; "rolling" = applications accepted year-round),
+      "applyUrl": string (official https page of THIS program on the organization's own domain),
+      "sourceUrls": string[] (1-3 official URLs where you read these details),
+      "match": number (0-100, honest eligibility + fit for THIS student),
+      "whyFit": string (1-2 sentences tied to this student's actual track, grades, majors or goals),
+      "description": string (1 sentence: what the program is),
+      "requirements": [ { "text": string, "status": "met" | "missing" | "unknown" } ] (3-5 key eligibility conditions; judge "met"/"missing" ONLY from the student summary, otherwise "unknown"),
+      "documents": string[] (typical required documents, max 5),
+      "nextStep": string (the single most useful action the student should take now)
+    }
+  ]
+}`;
+
+function scholarshipRules(today: string, lang: Lang, live: boolean) {
+  return `You are TawjihIQ's scholarship advisor for school students in Lebanon and the Arab region. Today's date is ${today}.
+
+GOAL: find REAL scholarships and funded opportunities that THIS student can realistically apply for next, with information a student can trust.
+
+STUDY LEVEL (critical):
+- If the student is still in school (e.g. Grade 10-12, Terminale, secondary, Lebanese Baccalaureate, IB, high school), search ONLY for opportunities that fund a FIRST university degree (undergraduate / bachelor's), or pre-university programs (summer schools, competitions) open to school students.
+- NEVER include postgraduate-only programs (master's/PhD) for a school student — e.g. Chevening, Fulbright Foreign Student, Erasmus Mundus master's, DAAD postgraduate awards are NOT eligible.
+- If the student is already at university, target their next realistic step.
+
+COVERAGE — aim for 8-10 opportunities across these categories, most relevant first:
+- "University aid": financial aid and merit scholarships of universities in the student's own country (for Lebanon: e.g. AUB, LAU, USJ, LU, NDU, UOB, USEK, BAU — only programs that really exist).
+- "Government": government-funded undergraduate scholarships open to students of the student's nationality.
+- "Foundation": foundations, NGOs and companies funding undergraduate study for students from the student's country/region.
+- "Program": summer schools, olympiads, competitions or pre-university programs for school students.
+
+ACCURACY (non-negotiable):
+${live
+    ? `- Use the web search tool. Base EVERY entry on official pages you actually read in this search (the organization's own website). Do not rely on memory alone.
+- Only mark "deadlineStatus": "confirmed" and fill "deadlineISO" when the exact upcoming date appears on an official page for the current/next cycle.`
+    : `- You cannot browse the web right now. Only include long-established programs you are highly confident still exist.
+- Do NOT state exact dates: set "deadlineISO" to "" and "deadlineStatus" to "estimated" or "unknown", and phrase the deadline as typical timing to check on the official page.`}
+- Never invent program names, amounts, conditions, dates or URLs. If a detail is not published, say so ("" or "unknown").
+- Never include programs whose current cycle has closed with no confirmed next cycle.
+- Links must be on the organization's own domain — never social media, news sites or scholarship aggregator sites.
+- Match the student's country/nationality eligibility; skip programs they cannot apply to.
+
+Keep machine fields ("category", "type", "tag", "deadlineStatus", requirement "status") exactly in English as listed. Write all other human-readable text in ${langName(lang)}.
+
+${SCHOLARSHIP_SCHEMA(today)}
+
+Sort by: category relevance for this student, then match (highest first).`;
+}
+
+/** Prompt pair for the live (web search) scholarship engine. */
+export function scholarshipSearchPrompt(profile: UserProfile, lang: Lang): { instructions: string; input: string } {
+  const today = new Date().toISOString().split("T")[0];
+  return {
+    instructions: scholarshipRules(today, lang, true),
+    input: `Student summary (JSON):\n${JSON.stringify(scholarshipStudentSummary(profile), null, 2)}\n\nSearch now and return the JSON.`,
+  };
+}
+
+/** Fallback messages when live search is unavailable (no exact dates claimed). */
+export function scholarshipsMessages(profile: UserProfile, lang: Lang): ChatMessage[] {
+  const today = new Date().toISOString().split("T")[0];
+  return [
+    { role: "system", content: scholarshipRules(today, lang, false) },
+    { role: "user", content: `Student summary (JSON):\n${JSON.stringify(scholarshipStudentSummary(profile), null, 2)}\n\nReturn the JSON.` },
   ];
 }
 
